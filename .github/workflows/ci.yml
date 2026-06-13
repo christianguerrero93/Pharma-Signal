@@ -31,18 +31,24 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -r backend/requirements.txt
       - run: python -m py_compile backend/enterprise_server.py
-      - run: python - <<'PY'
+      - name: Smoke test enterprise API
+        run: |
+          python - <<'PY'
           import sys
           sys.path.insert(0, 'backend')
           from fastapi.testclient import TestClient
           from enterprise_server import app
+
           client = TestClient(app)
           health = client.get('/health')
           assert health.status_code == 200, health.text
+
           dashboard = client.get('/api/v2/executive-dashboard', headers={'x-pharma-role': 'ceo'})
           assert dashboard.status_code == 200, dashboard.text
           assert dashboard.json()['total_budget'] > 0
+
           narrative = client.get('/api/v2/board/narrative', headers={'x-pharma-role': 'ceo'})
           assert narrative.status_code == 200, narrative.text
+
           print('enterprise backend smoke test passed')
           PY
