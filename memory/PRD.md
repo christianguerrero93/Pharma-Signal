@@ -31,30 +31,40 @@ Build a fully-fledged pharma-native Demand-Side Platform (DSP) + Intelligence La
 ## What's Been Implemented (2026-02-13)
 
 ### Iteration 1 — Core MVP
-- ✅ Backend `/api/dashboard/overview`, `/campaigns` (GET/POST), `/audiences`, `/pmps`, `/data-cost`, `/ga4`, `/script-lift`, `/vendors`, `/rtb/simulate`, `/ai/recommendations` (streaming Claude Sonnet 4.5), `/upload/{dataset}`, `/admin/reseed`
-- ✅ Idempotent seed (7 campaigns, 8 audiences, 8 PMPs, 7 channels GA4/data-cost, 12-week script lift series, vendor aggregates)
-- ✅ Executive Dashboard, Campaigns list + Builder, Audience Scorer, PMP Scorecard (killer feature), Data Cost view, GA4 Engagement, Script Lift, RTB Simulator, AI Recommendations, Vendor Reports, Data Upload
-- ✅ Bug fix: CSV upload now has per-dataset schema validation (rejects malformed rows with 400) + defensive reads
+- ✅ Dashboard, Campaigns, Audience Scorer, PMP Scorecard (killer feature), Data Cost, GA4, Script Lift, RTB Simulator, AI Recommendations, Vendor Reports, Data Upload
+- ✅ Idempotent seed (7 campaigns, 8 audiences, 8 PMPs, channels, 12-week script lift)
+- ✅ Bug fix: CSV upload schema validation + defensive reads
 
-### Iteration 2 — Next Action Items ("add all")
-- ✅ **Dashboard filters** — brand / indication / campaign_type filtering via `/api/dashboard/overview?brand=&indication=&campaign_type=`; UI has pill buttons + dropdowns + clear
-- ✅ **Campaign drill-down** — `/api/campaigns/{id}` returns campaign + linked audiences + linked PMPs + creatives + computed performance; UI at `/campaigns/:id` with KPI cards, setup grid, linked-audiences and linked-PMPs sections, creatives gallery
-- ✅ **Per-campaign linking** — seeded campaigns include `audience_ids` + `pmp_ids`. PATCH `/api/campaigns/{id}` updates links. UI dialog lets users multi-select audiences & PMPs to link
-- ✅ **RTB scenarios save/compare** — `/api/scenarios` CRUD; UI saves named scenarios after a run, lists all in a comparison table, click-to-load, trash to delete
-- ✅ **MLR Creative Review workflow** — `/api/creatives` GET/POST and PATCH for status; UI `/mlr` page with Pending/Approved/Rejected tabs and inline approve/reject + reviewer notes
-- ✅ **Live OpenRTB Bid Stream (simulated)** — `/api/live/bid-stream` SSE endpoint streams ~40 realistic bid events; UI `/live` page shows live table with vendor/channel/audience/match/decision and live KPIs (status, requests, win rate, avg bid)
-- ✅ **Vendor PDF export** — `/vendors` cards now have an Export PDF button that opens a print-friendly scorecard with deal-level table and strategic note, triggers `window.print()` for save-as-PDF
+### Iteration 2 — "Add all"
+- ✅ Dashboard filters (brand / indication / campaign_type)
+- ✅ Campaign drill-down `/campaigns/:id` + Link Audiences & PMPs dialog
+- ✅ Per-campaign linking (`audience_ids`, `pmp_ids` on campaigns)
+- ✅ RTB scenarios save / compare / delete
+- ✅ MLR Creative Review workflow with Pending / Approved / Rejected tabs
+- ✅ Live OpenRTB Bid Stream (simulated SSE)
+- ✅ Vendor PDF export (print-friendly scorecard)
+
+### Iteration 3 — "Add all" + role-based access
+- ✅ **JWT email/password authentication** (bcrypt hashing, 12h tokens, Bearer in localStorage)
+- ✅ **Role-based access control** with 4 roles seeded (Admin, Trader, Analyst, Vendor with vendor_scope)
+- ✅ Backend role guards on POST /campaigns, PATCH /campaigns, PATCH /creatives, POST /upload, /admin/reseed, /shares/vendor; `/auth/users` admin-only
+- ✅ Frontend ProtectedRoute wrapper + role-filtered sidebar nav; 403 page for forbidden access
+- ✅ Login page with brand-panel split + demo account quick-picker
+- ✅ User dropdown with name + role badge + sign out
+- ✅ **HCP Frequency Intelligence** (`/api/frequency-intelligence`, `/frequency` page) — overexposure detection per HCP audience with Critical/High/Moderate/Healthy distribution
+- ✅ **Share-via-link for vendor scorecards** — `/api/shares/vendor` CRUD (admin/trader), `/api/public/shares/vendor/{token}` public read-only, `/share/v/:token` public scorecard route. Cards have Share Link button → dialog → copy URL → toast. Active shares table with copy & revoke
 
 ## Prioritized Backlog
-- **P1** Filtering on dashboard by brand / indication / campaign type ✅
-- **P1** Detail drill-down (clicking a campaign opens full performance) ✅
-- **P1** Persist RTB simulation runs and compare scenarios ✅
-- **P2** Authentication (JWT or Emergent Google OAuth) — deferred, needs playbook + user preference
-- **P2** Per-campaign attached audiences/PMPs (relational linking) ✅
-- **P2** Export reports as PDF ✅ (vendor scorecard)
-- **P3** Real OpenRTB integration / live exchange connectors — simulated stream delivered
-- **P3** MLR creative review workflow with version history ✅
-- **P3** Frequency intelligence per HCP target list
+- All P1/P2 items complete ✅
+- **P2** Frequency intelligence per HCP target list ✅
+- **P2** Authentication + RBAC ✅
+- **P3** Real OpenRTB exchange connectors (would need SSP partnerships — current simulated stream is realistic)
+- **P3** Password reset / refresh tokens (only access tokens for now)
+- **P3** Split server.py into per-resource routers (1170 lines — flagged for refactor)
 
 ## Test Credentials
-N/A — no authentication implemented (open demo access). Auth is the only deferred Next Action Item.
+See `/app/memory/test_credentials.md`. Four demo accounts:
+- `admin@pharmasignal.io` / `Admin@2026` (admin)
+- `trader@pharmasignal.io` / `Trader@2026` (trader)
+- `analyst@pharmasignal.io` / `Analyst@2026` (analyst)
+- `vendor@pulsepoint.com` / `Vendor@2026` (vendor, scoped to PulsePoint)

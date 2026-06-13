@@ -1100,6 +1100,8 @@ async def frequency_intelligence(current_user: dict = Depends(get_current_user))
 # ============== VENDOR SHARES (public read-only) ==============
 @api_router.post("/shares/vendor")
 async def create_vendor_share(body: ShareCreate, current_user: dict = Depends(require_roles("admin", "trader"))):
+    if body.expires_in_days < 1:
+        raise HTTPException(400, "expires_in_days must be at least 1")
     token = secrets.token_urlsafe(16)
     doc = {
         "id": str(uuid.uuid4()),
