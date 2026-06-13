@@ -12,7 +12,11 @@ export default function AIRecommendations() {
     setStreaming(true);
     setText("");
     try {
-      const resp = await fetch(`${API}/ai/recommendations`, { method: "POST" });
+      const token = localStorage.getItem("ps_token");
+      const resp = await fetch(`${API}/ai/recommendations`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!resp.ok || !resp.body) throw new Error("stream failed");
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();

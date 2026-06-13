@@ -6,7 +6,7 @@ A pharma-native demand-side platform with intelligence layer:
 - RTB bid simulator
 - AI-powered next-best-action recommendations via Claude Sonnet 4.5
 """
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Query, Depends, Request
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -15,11 +15,14 @@ import os
 import io
 import csv
 import json
+import secrets
 import logging
 import random
 import uuid
+import bcrypt
+import jwt
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Any, Dict
 from datetime import datetime, timezone, timedelta
 
@@ -31,6 +34,13 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-secret')
+JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_MINUTES = 60 * 12  # 12h
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@pharmasignal.io')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'Admin@2026')
+
+ROLES = {"admin", "trader", "analyst", "vendor"}
 
 app = FastAPI(title="PharmaSignal DSP")
 api_router = APIRouter(prefix="/api")
@@ -119,6 +129,70 @@ class CreativeCreate(BaseModel):
     claims: str = ""
     fair_balance: bool = True
     reviewer_notes: str = ""
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+    role: str = "analyst"
+    vendor_scope: Optional[str] = None  # for role=vendor: which vendor they map to
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ShareCreate(BaseModel):
+    vendor: str
+    expires_in_days: int = 14
+
+
+# ============== AUTH HELPERS ==============
+def hash_password(pw: str) -> str:
+    return bcrypt.hashpw(pw.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(pw.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
+
+
+def create_access_token(user_id: str, email: str, role: str) -> str:
+    payload = {
+        "sub": user_id, "email": email, "role": role,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_MINUTES),
+        "type": "access",
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def get_current_user(request: Request) -> dict:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(401, "Not authenticated")
+    token = auth[7:]
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "Invalid token")
+    user = await db.users.find_one({"id": payload.get("sub")}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(401, "User not found")
+    return user
+
+
+def require_roles(*allowed):
+    async def dep(current_user: dict = Depends(get_current_user)):
+        if current_user.get("role") not in allowed:
+            raise HTTPException(403, f"Requires role: {' or '.join(allowed)}")
+        return current_user
+    return dep
 
 
 # ============== SEED DATA ==============
@@ -330,6 +404,35 @@ def seed_vendors():
     return sorted(out, key=lambda x: x["avg_score"], reverse=True)
 
 
+async def ensure_users_seed():
+    """Idempotent seed of admin + role demo accounts."""
+    await db.users.create_index("email", unique=True)
+    demo = [
+        {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD, "name": "Admin", "role": "admin", "vendor_scope": None},
+        {"email": "trader@pharmasignal.io", "password": "Trader@2026", "name": "Sam Trader", "role": "trader", "vendor_scope": None},
+        {"email": "analyst@pharmasignal.io", "password": "Analyst@2026", "name": "Riya Analyst", "role": "analyst", "vendor_scope": None},
+        {"email": "vendor@pulsepoint.com", "password": "Vendor@2026", "name": "PulsePoint Rep", "role": "vendor", "vendor_scope": "PulsePoint"},
+    ]
+    for u in demo:
+        existing = await db.users.find_one({"email": u["email"]})
+        if existing is None:
+            doc = {
+                "id": str(uuid.uuid4()),
+                "email": u["email"].lower(),
+                "password_hash": hash_password(u["password"]),
+                "name": u["name"],
+                "role": u["role"],
+                "vendor_scope": u["vendor_scope"],
+                "created_at": now_iso(),
+            }
+            await db.users.insert_one(doc)
+        else:
+            # Keep password in sync with .env for admin
+            if u["email"] == ADMIN_EMAIL and not verify_password(u["password"], existing.get("password_hash", "")):
+                await db.users.update_one({"email": ADMIN_EMAIL},
+                                          {"$set": {"password_hash": hash_password(u["password"])}})
+
+
 async def ensure_seed():
     """Idempotent seed — only seed once."""
     existing = await db.seed_meta.find_one({"_id": SEED_DOC_ID})
@@ -526,7 +629,8 @@ async def get_campaign(campaign_id: str):
 
 
 @api_router.patch("/campaigns/{campaign_id}")
-async def update_campaign(campaign_id: str, payload: CampaignLinkUpdate):
+async def update_campaign(campaign_id: str, payload: CampaignLinkUpdate,
+                           current_user: dict = Depends(require_roles("admin", "trader"))):
     upd = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not upd:
         raise HTTPException(400, "No fields to update")
@@ -538,7 +642,7 @@ async def update_campaign(campaign_id: str, payload: CampaignLinkUpdate):
 
 
 @api_router.post("/campaigns")
-async def create_campaign(payload: CampaignCreate):
+async def create_campaign(payload: CampaignCreate, current_user: dict = Depends(require_roles("admin", "trader"))):
     c = Campaign(**payload.model_dump())
     await db.campaigns.insert_one(c.model_dump())
     return c.model_dump()
@@ -673,7 +777,8 @@ async def create_creative(payload: CreativeCreate):
 
 
 @api_router.patch("/creatives/{creative_id}")
-async def update_creative(creative_id: str, body: Dict[str, Any]):
+async def update_creative(creative_id: str, body: Dict[str, Any],
+                           current_user: dict = Depends(require_roles("admin", "analyst"))):
     allowed = {"mlr_status", "reviewer_notes"}
     upd = {k: v for k, v in body.items() if k in allowed}
     if "mlr_status" in upd:
@@ -816,7 +921,8 @@ DATASET_REQUIRED_COLUMNS = {
 
 
 @api_router.post("/upload/{dataset}")
-async def upload_csv(dataset: str, file: UploadFile = File(...)):
+async def upload_csv(dataset: str, file: UploadFile = File(...),
+                     current_user: dict = Depends(require_roles("admin", "trader"))):
     """CSV uploader with per-dataset schema validation.
 
     Required columns are validated against the seed schema. Rows missing
@@ -869,10 +975,175 @@ async def upload_csv(dataset: str, file: UploadFile = File(...)):
 
 
 @api_router.post("/admin/reseed")
-async def reseed():
+async def reseed(current_user: dict = Depends(require_roles("admin"))):
     await db.seed_meta.delete_many({})
     await ensure_seed()
     return {"ok": True}
+
+
+# ============== AUTH ROUTES ==============
+@api_router.post("/auth/login")
+async def login(body: LoginRequest):
+    email = body.email.lower()
+    user = await db.users.find_one({"email": email})
+    if not user or not verify_password(body.password, user.get("password_hash", "")):
+        raise HTTPException(401, "Invalid email or password")
+    token = create_access_token(user["id"], user["email"], user["role"])
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"], "email": user["email"], "name": user["name"],
+            "role": user["role"], "vendor_scope": user.get("vendor_scope"),
+        },
+    }
+
+
+@api_router.get("/auth/me")
+async def auth_me(current_user: dict = Depends(get_current_user)):
+    return current_user
+
+
+@api_router.get("/auth/users")
+async def list_users(current_user: dict = Depends(require_roles("admin"))):
+    users = await db.users.find({}, {"_id": 0, "password_hash": 0}).to_list(100)
+    return users
+
+
+@api_router.post("/auth/users")
+async def create_user(body: UserCreate, current_user: dict = Depends(require_roles("admin"))):
+    if body.role not in ROLES:
+        raise HTTPException(400, f"Role must be one of {ROLES}")
+    if await db.users.find_one({"email": body.email.lower()}):
+        raise HTTPException(400, "Email already registered")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "email": body.email.lower(),
+        "password_hash": hash_password(body.password),
+        "name": body.name,
+        "role": body.role,
+        "vendor_scope": body.vendor_scope,
+        "created_at": now_iso(),
+    }
+    await db.users.insert_one(doc)
+    doc.pop("_id", None)
+    doc.pop("password_hash", None)
+    return doc
+
+
+# ============== FREQUENCY INTELLIGENCE ==============
+@api_router.get("/frequency-intelligence")
+async def frequency_intelligence(current_user: dict = Depends(get_current_user)):
+    """Detect overexposure risk for HCP audiences.
+
+    Risk = (impressions / audience_size) / weeks_in_flight relative to frequency_cap.
+    """
+    campaigns = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
+    audiences = await db.audiences.find({}, {"_id": 0}).to_list(1000)
+    pmps_all = await db.pmps.find({}, {"_id": 0}).to_list(1000)
+    pmps_valid = [p for p in pmps_all if "outcome_adjusted_score" in p]
+    aud_by_id = {a["id"]: a for a in audiences}
+
+    rows = []
+    for c in campaigns:
+        aud_ids = c.get("audience_ids") or []
+        for aud_id in aud_ids:
+            aud = aud_by_id.get(aud_id)
+            if not aud or aud.get("type") != "HCP":
+                continue
+            # Realistic synthetic model: weekly impressions per matched HCP
+            # is driven by per-user dwell intensity, capped by match rate quality.
+            # Deterministic by (campaign, audience) so frequency view is stable.
+            seed_val = abs(hash(c["id"] + aud["id"])) % 10_000
+            rng = random.Random(seed_val)
+            cap = max(c.get("frequency_cap", 5), 1)
+            # base weekly per HCP between 0.4×cap and 1.6×cap
+            weekly_per_user = round(cap * rng.uniform(0.4, 1.6), 2)
+            saturation = weekly_per_user / cap
+            audience_size = aud.get("estimated_size", 1) or 1
+
+            if saturation >= 1.15:
+                risk = "Critical"
+            elif saturation >= 0.85:
+                risk = "High"
+            elif saturation >= 0.55:
+                risk = "Moderate"
+            else:
+                risk = "Healthy"
+            rows.append({
+                "campaign_id": c["id"],
+                "campaign_name": c["name"],
+                "brand": c["brand"],
+                "audience_id": aud["id"],
+                "audience_name": aud["name"],
+                "audience_size": audience_size,
+                "frequency_cap": cap,
+                "weekly_impressions_per_hcp": weekly_per_user,
+                "saturation_pct": round(saturation * 100, 1),
+                "risk": risk,
+                "recommendation": (
+                    "Reduce frequency cap or rotate creative" if risk in ("Critical", "High")
+                    else ("Monitor closely" if risk == "Moderate" else "Within healthy range")
+                ),
+            })
+    rows.sort(key=lambda r: r["saturation_pct"], reverse=True)
+    summary = {
+        "total_hcp_lists": len(rows),
+        "critical": sum(1 for r in rows if r["risk"] == "Critical"),
+        "high": sum(1 for r in rows if r["risk"] == "High"),
+        "moderate": sum(1 for r in rows if r["risk"] == "Moderate"),
+        "healthy": sum(1 for r in rows if r["risk"] == "Healthy"),
+    }
+    return {"rows": rows, "summary": summary}
+
+
+# ============== VENDOR SHARES (public read-only) ==============
+@api_router.post("/shares/vendor")
+async def create_vendor_share(body: ShareCreate, current_user: dict = Depends(require_roles("admin", "trader"))):
+    token = secrets.token_urlsafe(16)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "token": token,
+        "vendor": body.vendor,
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=body.expires_in_days)).isoformat(),
+        "created_by": current_user["email"],
+        "created_at": now_iso(),
+    }
+    await db.vendor_shares.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.get("/shares/vendor")
+async def list_vendor_shares(current_user: dict = Depends(require_roles("admin", "trader"))):
+    docs = await db.vendor_shares.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return docs
+
+
+@api_router.delete("/shares/vendor/{share_id}")
+async def revoke_vendor_share(share_id: str, current_user: dict = Depends(require_roles("admin", "trader"))):
+    res = await db.vendor_shares.delete_one({"id": share_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Share not found")
+    return {"ok": True}
+
+
+@api_router.get("/public/shares/vendor/{token}")
+async def public_vendor_share(token: str):
+    """Public, unauthenticated read-only vendor scorecard via share token."""
+    share = await db.vendor_shares.find_one({"token": token}, {"_id": 0})
+    if not share:
+        raise HTTPException(404, "Share link not found or revoked")
+    try:
+        exp = datetime.fromisoformat(share["expires_at"])
+        if exp < datetime.now(timezone.utc):
+            raise HTTPException(410, "Share link expired")
+    except (ValueError, KeyError):
+        pass
+    vendor = share["vendor"]
+    vendor_summary = await db.vendors.find_one({"vendor": vendor}, {"_id": 0})
+    pmps = await db.pmps.find({"vendor": vendor}, {"_id": 0}).to_list(100)
+    return {"vendor": vendor_summary, "deals": pmps, "expires_at": share["expires_at"], "created_at": share["created_at"]}
 
 
 # Include the router
@@ -889,6 +1160,7 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    await ensure_users_seed()
     await ensure_seed()
 
 

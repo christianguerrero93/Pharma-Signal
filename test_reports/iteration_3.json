@@ -1,0 +1,40 @@
+{
+  "summary": "Iteration 3 e2e testing of PharmaSignal DSP auth/RBAC/Frequency Intel/Vendor Shares. Backend: 28/28 pytest tests pass (auth login/me/users, role guards on /campaigns, /upload, /shares, /creatives, /admin/reseed, frequency-intelligence distribution, vendor shares CRUD + public + expired 410). Frontend: 100% of 8 critical flows pass (unauth /dashboard -> /login redirect, demo quick-pick fills creds, wrong pw shows login-error, admin login lands on /dashboard, user-menu + logout-btn visible, Frequency Intel renders KPI cards + freq-chart + freq-table with risk badges, share dialog creates link with copy/revoke rows, vendor public share page renders without auth, invalid token shows share-error). Role nav: Admin shows all 12 nav items, Analyst hides /upload (still has /mlr access), Vendor sees only Overview/PMP/Vendor Value (no Campaigns/Frequency). Forbidden routes: Analyst->/upload renders data-testid='forbidden', Trader->/mlr renders forbidden.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/dashboard/overview", "issue": "Intentionally unauthenticated per spec (kept open for demo read). Note this also means /audiences, /pmps, /vendors, /data-cost, /ga4, /script-lift, /scenarios, /creatives GET and /rtb/simulate POST are all open. Confirmed acceptable for demo but worth tagging in docs."},
+      {"endpoint": "POST /api/admin/reseed", "issue": "Test calls this once which re-runs ensure_seed and wipes-and-reseeds collections; if any campaign IDs are cached by frontend during a long session they'd 404. Not a defect, but tests run reseed before downstream tests intentionally."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmasignal.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1170 lines — past the 700-line threshold. Strongly recommend splitting into routers (auth.py, shares.py, frequency.py, campaigns.py, creatives.py, upload.py, ai.py, live.py) for maintainability.",
+    "CORS allow_credentials=True with allow_origins='*' in default config is invalid per the CORS spec (browsers ignore wildcard with credentials). Since the app uses Authorization Bearer (not cookies) this is functionally fine, but set allow_credentials=False or restrict origins.",
+    "JWT_SECRET defaults to 'dev-secret' if env var missing — fine for the preview but production deployments must set JWT_SECRET in env.",
+    "/api/shares/vendor POST with expires_in_days=0 yields an expires_at = now, which is already in the past by the time the public endpoint is queried (test_expired_share_returns_410 passes). Consider rejecting expires_in_days<1 to avoid accidentally-broken shares.",
+    "get_current_user issues HTTPException(401) inside an `except jwt.ExpiredSignatureError` without `from None`, which leaks the JWT internal traceback when DEBUG is on. Cosmetic.",
+    "ensure_users_seed only resets the admin password when it drifts from .env; trader/analyst/vendor passwords are NOT kept in sync — by design but worth documenting in README so a rotated .env doesn't surprise reviewers.",
+    "Public share endpoint correctly excludes `_id` via projection and returns the vendor summary + deals — no ObjectID leak.",
+    "RBAC matrix on PATCH /creatives is (admin, analyst) — trader is correctly excluded (verified by test_creative_patch_role)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmasignal.py (rewrote with JWT auth fixtures + 17 new tests for auth/RBAC/frequency/shares; updated existing campaign/upload/creative tests to use admin/trader tokens)"
+  ],
+  "success_rate": {"backend": "100% (28/28 pytest)", "frontend": "100% (8/8 critical flows: redirect, demo-quick-pick, invalid-creds, admin login, user-menu+logout, role-nav filtering, forbidden routes, frequency page KPIs+chart+table, share dialog create/copy/revoke, public share page, share-error for invalid token)"},
+  "test_credentials": "Loaded from /app/memory/test_credentials.md — admin@pharmasignal.io/Admin@2026 (admin), trader@pharmasignal.io/Trader@2026, analyst@pharmasignal.io/Analyst@2026, vendor@pulsepoint.com/Vendor@2026 (vendor_scope=PulsePoint). All 4 verified via POST /api/auth/login.",
+  "seed_data_creation": "ensure_users_seed runs on startup and is idempotent. Verified all 4 demo users present in GET /api/auth/users response (>=4 users, none expose password_hash).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend tests in /app/backend/tests/test_pharmasignal.py now contain session-scoped tokens fixture that logs in all 4 roles once and shares Authorization sessions. To add a new role-protected endpoint test, just request the appropriate *_sess fixture. The test_expired_share_returns_410 test depends on expires_in_days=0 producing an immediately-expired share — if the server changes this behavior, adjust accordingly. test_reseed_admin_only actually invokes /admin/reseed which wipes and re-inserts seed collections — that's why it runs early and downstream tests re-query data. Frontend protected routes use data-testid='forbidden' (see /app/frontend/src/components/ProtectedRoute.jsx). Public share lives at /share/v/:token with data-testid='public-share-page' or 'share-error'.",
+  "rca of the issue": "No bugs found in iteration 3. Auth + RBAC + Frequency Intel + Shares all functional end-to-end on the live preview URL. The CORS+credentials wildcard config and the 1170-line server.py are the only sustained-quality concerns flagged for the main agent."
+}

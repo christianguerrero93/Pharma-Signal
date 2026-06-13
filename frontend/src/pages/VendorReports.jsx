@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
 import { api, fmtMoney } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import PageHeader from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Printer, FileText } from "lucide-react";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Printer, FileText, Share2, Copy, Check, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 const recoColor = (r) =>
   r === "Scale" ? "bg-emerald-100 text-emerald-800" :
@@ -14,11 +20,53 @@ export default function VendorReports() {
   const [rows, setRows] = useState([]);
   const [printVendor, setPrintVendor] = useState(null);
   const [pmps, setPmps] = useState([]);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareVendor, setShareVendor] = useState(null);
+  const [shareDays, setShareDays] = useState(14);
+  const [shares, setShares] = useState([]);
+  const [creating, setCreating] = useState(false);
+  const { has } = useAuth();
+  const canShare = has && has("admin", "trader");
+
+  const loadShares = () => {
+    if (!canShare) return;
+    api.get("/shares/vendor").then(r => setShares(r.data)).catch(() => {});
+  };
 
   useEffect(() => {
     api.get("/vendors").then(r => setRows(r.data));
     api.get("/pmps").then(r => setPmps(r.data));
+    loadShares();
   }, []);
+
+  const openShare = (v) => {
+    setShareVendor(v);
+    setShareOpen(true);
+  };
+
+  const createShare = async () => {
+    setCreating(true);
+    try {
+      const { data } = await api.post("/shares/vendor", { vendor: shareVendor.vendor, expires_in_days: shareDays });
+      toast.success("Share link created");
+      loadShares();
+      const url = `${window.location.origin}/share/v/${data.token}`;
+      try { await navigator.clipboard.writeText(url); toast.success("Link copied"); } catch {}
+    } finally { setCreating(false); }
+  };
+
+  const revoke = async (id) => {
+    await api.delete(`/shares/vendor/${id}`);
+    toast.success("Revoked");
+    loadShares();
+  };
+
+  const copyLink = async (token) => {
+    const url = `${window.location.origin}/share/v/${token}`;
+    try { await navigator.clipboard.writeText(url); toast.success("Link copied"); } catch {
+      toast.error("Copy failed");
+    }
+  };
 
   const openPrint = (v) => {
     setPrintVendor(v);
@@ -64,14 +112,86 @@ export default function VendorReports() {
                   <div className="metric-num text-xl text-slate-900 mt-1">{(v.working_media * 100).toFixed(0)}%</div>
                 </div>
               </div>
+              <div className="flex gap-2 mt-4">
               <Button onClick={() => openPrint(v)} variant="outline" size="sm"
-                className="w-full mt-4 gap-1.5" data-testid={`export-${v.vendor}`}>
-                <FileText className="h-3.5 w-3.5" /> Export PDF
+                className="flex-1 gap-1.5" data-testid={`export-${v.vendor}`}>
+                <FileText className="h-3.5 w-3.5" /> PDF
               </Button>
+              {canShare && (
+                <Button onClick={() => openShare(v)} variant="outline" size="sm"
+                  className="flex-1 gap-1.5" data-testid={`share-${v.vendor}`}>
+                  <Share2 className="h-3.5 w-3.5" /> Share Link
+                </Button>
+              )}
+            </div>
             </div>
           ))}
         </div>
+
+        {/* Active shares table */}
+        {canShare && shares.length > 0 && (
+          <div className="bg-white border border-slate-200 rounded-md p-5 mt-6" data-testid="shares-list">
+            <h3 className="font-heading font-semibold text-slate-900 mb-3">Active Share Links ({shares.length})</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b border-slate-200">
+                  <tr className="text-[10px] uppercase tracking-[0.1em] text-slate-500">
+                    <th className="text-left font-semibold py-2">Vendor</th>
+                    <th className="text-left font-semibold py-2">Token</th>
+                    <th className="text-left font-semibold py-2">Created By</th>
+                    <th className="text-left font-semibold py-2">Expires</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shares.map(s => (
+                    <tr key={s.id} className="border-b border-slate-100" data-testid={`share-row-${s.id}`}>
+                      <td className="py-2 font-medium text-slate-900">{s.vendor}</td>
+                      <td className="py-2 font-mono text-xs text-slate-600">{s.token.slice(0,12)}…</td>
+                      <td className="py-2 text-slate-600">{s.created_by}</td>
+                      <td className="py-2 text-slate-600 font-mono text-xs">{new Date(s.expires_at).toLocaleDateString()}</td>
+                      <td className="py-2 text-right">
+                        <button onClick={() => copyLink(s.token)} className="text-slate-500 hover:text-blue-700 inline-flex items-center gap-1 mr-3" data-testid={`copy-${s.id}`}>
+                          <Copy className="h-3.5 w-3.5" /> Copy
+                        </button>
+                        <button onClick={() => revoke(s.id)} className="text-slate-400 hover:text-red-600" data-testid={`revoke-${s.id}`}>
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Share dialog */}
+      <Dialog open={shareOpen} onOpenChange={setShareOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Share {shareVendor?.vendor} scorecard</DialogTitle>
+            <DialogDescription>
+              Create a read-only public link that any vendor contact can open without an account. You can revoke it any time.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">Link expires in (days)</label>
+              <Input type="number" min={1} max={90} value={shareDays}
+                onChange={(e) => setShareDays(parseInt(e.target.value) || 14)}
+                className="mt-1.5" data-testid="share-days" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShareOpen(false)}>Cancel</Button>
+            <Button onClick={createShare} disabled={creating} className="bg-blue-900 hover:bg-blue-950 gap-1.5" data-testid="create-share">
+              <Share2 className="h-4 w-4" /> {creating ? "Creating…" : "Create & Copy Link"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Print-only scorecard */}
       {printVendor && (

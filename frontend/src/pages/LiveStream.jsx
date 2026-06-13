@@ -20,7 +20,11 @@ export default function LiveStream() {
     const ac = new AbortController();
     ctrlRef.current = ac;
     try {
-      const resp = await fetch(`${API}/live/bid-stream`, { signal: ac.signal });
+      const token = localStorage.getItem("ps_token");
+      const resp = await fetch(`${API}/live/bid-stream`, {
+        signal: ac.signal,
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       if (!resp.body) throw new Error("no body");
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();

@@ -8,6 +8,19 @@ export const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
+export const setAuthToken = (token) => {
+  api.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+};
+
+export const clearAuthToken = () => {
+  delete api.defaults.headers.common["Authorization"];
+};
+
+// Pre-attach token from localStorage at module load so requests right after
+// page reload don't fire without it (AuthProvider then re-validates).
+const t = typeof window !== "undefined" && window.localStorage?.getItem("ps_token");
+if (t) setAuthToken(t);
+
 export const fmtMoney = (n) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",

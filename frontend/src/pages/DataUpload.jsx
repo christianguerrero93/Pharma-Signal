@@ -26,7 +26,11 @@ export default function DataUpload() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const resp = await fetch(`${API}/upload/${dataset}`, { method: "POST", body: fd });
+      const token = localStorage.getItem("ps_token");
+      const resp = await fetch(`${API}/upload/${dataset}`, {
+        method: "POST", body: fd,
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || "upload failed");
       toast.success(`Inserted ${data.rows_inserted} rows into ${data.dataset}`);
