@@ -8,12 +8,14 @@
   --bg: #07111f;
   --panel: rgba(15, 23, 42, 0.76);
   --panel-strong: rgba(15, 23, 42, 0.95);
+  --panel-soft: rgba(30, 41, 59, 0.52);
   --border: rgba(148, 163, 184, 0.22);
   --text-muted: #94a3b8;
   --accent: #22d3ee;
   --accent-2: #a78bfa;
   --success: #34d399;
   --warning: #facc15;
+  --danger: #fb7185;
 }
 
 * {
@@ -31,7 +33,7 @@ body {
   background:
     radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 32rem),
     radial-gradient(circle at 80% 10%, rgba(167, 139, 250, 0.2), transparent 30rem),
-    var(--bg);
+    linear-gradient(180deg, #07111f 0%, #0f172a 48%, #020617 100%);
 }
 
 a {
@@ -48,7 +50,7 @@ main {
   display: flex;
   justify-content: space-between;
   margin: 0 auto;
-  max-width: 1180px;
+  max-width: 1240px;
   padding: 28px 22px 0;
 }
 
@@ -71,6 +73,13 @@ main {
   width: 52px;
 }
 
+.nav-links {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.nav-links a,
 .nav-cta,
 .primary-button,
 .secondary-button {
@@ -79,6 +88,11 @@ main {
   display: inline-flex;
   font-weight: 800;
   padding: 12px 18px;
+}
+
+.nav-links a {
+  color: var(--text-muted);
+  font-size: 0.92rem;
 }
 
 .primary-button {
@@ -98,7 +112,7 @@ main {
 .hero-grid,
 .section {
   margin: 0 auto;
-  max-width: 1180px;
+  max-width: 1240px;
   padding: 90px 22px;
 }
 
@@ -127,20 +141,20 @@ p {
 }
 
 h1 {
-  font-size: clamp(3rem, 8vw, 6.75rem);
+  font-size: clamp(3rem, 8vw, 6.8rem);
   letter-spacing: -0.08em;
   line-height: 0.92;
   margin-bottom: 24px;
 }
 
 h2 {
-  font-size: clamp(2rem, 4vw, 3.7rem);
+  font-size: clamp(2rem, 4vw, 3.72rem);
   letter-spacing: -0.06em;
   line-height: 0.96;
 }
 
 h3 {
-  font-size: 1.2rem;
+  font-size: 1.18rem;
   margin-bottom: 8px;
 }
 
@@ -149,14 +163,16 @@ h3 {
 .panel p,
 .module-card p,
 .roadmap p,
-.campaign-card p {
+.list-card p,
+.connector-card p,
+.bid-card li {
   color: var(--text-muted);
   line-height: 1.7;
 }
 
 .hero-copy {
   font-size: 1.18rem;
-  max-width: 720px;
+  max-width: 740px;
 }
 
 .hero-actions {
@@ -171,7 +187,11 @@ h3 {
 .kpi-card,
 .module-card,
 .roadmap-grid > div,
-.campaign-card {
+.list-card,
+.bid-card,
+.connector-card,
+.supply-table,
+.architecture-table {
   background: var(--panel);
   border: 1px solid var(--border);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
@@ -186,7 +206,8 @@ h3 {
 .card-header,
 .panel-title,
 .metric-row,
-.campaign-meta {
+.campaign-meta,
+.status-strip {
   align-items: center;
   display: flex;
   justify-content: space-between;
@@ -230,7 +251,7 @@ h3 {
 
 .section-heading {
   margin-bottom: 32px;
-  max-width: 820px;
+  max-width: 860px;
 }
 
 .dashboard-section {
@@ -239,15 +260,25 @@ h3 {
 
 .kpi-grid,
 .module-grid,
-.roadmap-grid {
+.roadmap-grid,
+.integration-grid,
+.connector-feed-grid,
+.bid-grid,
+.campaign-grid {
   display: grid;
   gap: 18px;
+}
+
+.kpi-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .kpi-card,
 .module-card,
-.roadmap-grid > div {
+.roadmap-grid > div,
+.list-card,
+.connector-card,
+.bid-card {
   border-radius: 26px;
   padding: 24px;
 }
@@ -257,14 +288,29 @@ h3 {
   gap: 12px;
 }
 
-.kpi-card span {
+.kpi-card span,
+.panel-title span,
+.campaign-meta,
+.table-row span,
+.architecture-row span,
+small {
   color: var(--text-muted);
+}
+
+.kpi-card strong,
+.module-card strong {
+  line-height: 1.5;
 }
 
 .panel-grid {
   display: grid;
   gap: 20px;
   grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+  margin-top: 24px;
+}
+
+.campaign-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 24px;
 }
 
@@ -279,54 +325,92 @@ h3 {
   padding-bottom: 18px;
 }
 
-.panel-title span,
-.campaign-meta,
-.table-row span {
-  color: var(--text-muted);
+.panel-title h3 {
+  margin: 0;
 }
 
-.campaign-list {
-  display: grid;
-  gap: 16px;
+.campaign-panel {
+  min-height: 310px;
 }
 
-.campaign-card {
-  border-radius: 24px;
-  padding: 20px;
-}
-
-.campaign-card h4 {
-  font-size: 1.2rem;
-  margin-bottom: 12px;
-}
-
-.campaign-card strong {
+.green-callout {
   color: var(--success);
   display: block;
   line-height: 1.5;
+  margin-top: 18px;
 }
 
-.campaign-meta {
-  flex-wrap: wrap;
-  font-size: 0.9rem;
-  justify-content: flex-start;
-  margin-bottom: 12px;
-}
-
-.formula {
-  background: rgba(2, 6, 23, 0.58);
-  border: 1px solid var(--border);
+.status-strip {
+  background: rgba(34, 211, 238, 0.09);
+  border: 1px solid rgba(34, 211, 238, 0.24);
   border-radius: 18px;
-  color: var(--warning);
-  display: block;
-  line-height: 1.7;
-  margin-bottom: 18px;
-  padding: 18px;
-  white-space: pre-wrap;
+  margin-top: 18px;
+  padding: 14px 16px;
+}
+
+.mini-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.mini-metrics span {
+  background: rgba(2, 6, 23, 0.44);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  padding: 9px 12px;
+}
+
+.mini-metrics strong {
+  color: #fff;
+}
+
+.bid-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.bid-card ul {
+  margin: 12px 0 0;
+  padding-left: 20px;
+}
+
+.bid-price {
+  font-size: 2.1rem;
+  font-weight: 900;
+  letter-spacing: -0.05em;
+  margin-bottom: 10px;
+}
+
+.decision-bid {
+  border-color: rgba(52, 211, 153, 0.42);
+}
+
+.decision-throttle {
+  border-color: rgba(250, 204, 21, 0.42);
+}
+
+.decision-reject {
+  border-color: rgba(251, 113, 133, 0.42);
+}
+
+.risk-box {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.risk-box span {
+  background: rgba(250, 204, 21, 0.1);
+  border: 1px solid rgba(250, 204, 21, 0.24);
+  border-radius: 14px;
+  color: #fde68a;
+  font-size: 0.9rem;
+  padding: 9px 10px;
 }
 
 .supply-table {
-  border: 1px solid var(--border);
   border-radius: 28px;
   overflow: hidden;
 }
@@ -337,7 +421,7 @@ h3 {
   border-bottom: 1px solid var(--border);
   display: grid;
   gap: 18px;
-  grid-template-columns: 0.8fr 1.1fr 0.4fr 1.6fr;
+  grid-template-columns: 0.75fr 1fr 0.35fr 1fr 1.55fr;
   padding: 18px 22px;
 }
 
@@ -348,7 +432,7 @@ h3 {
 .table-head {
   background: var(--panel-strong);
   color: var(--text-muted);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 900;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -365,12 +449,67 @@ h3 {
   padding: 8px 12px;
 }
 
+.two-column-section {
+  display: grid;
+  gap: 34px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.stacked-list {
+  display: grid;
+  gap: 16px;
+}
+
+.list-card small {
+  display: block;
+  line-height: 1.5;
+  margin-top: 12px;
+}
+
 .module-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .module-card {
   min-height: 220px;
+}
+
+.integration-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.connector-feed-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.architecture-table {
+  border-radius: 28px;
+  margin-top: 24px;
+  overflow: hidden;
+}
+
+.architecture-row {
+  align-items: start;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 0.7fr 0.9fr 1.8fr;
+  padding: 20px 22px;
+}
+
+.architecture-row:last-child {
+  border-bottom: none;
+}
+
+.architecture-row p {
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.roadmap-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .roadmap-grid > div span {
@@ -380,20 +519,53 @@ h3 {
   letter-spacing: 0.12em;
 }
 
+.roadmap-panel .roadmap-grid {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 1100px) {
+  .kpi-grid,
+  .bid-grid,
+  .integration-grid,
+  .connector-feed-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 900px) {
   .hero-grid,
   .panel-grid,
-  .kpi-grid,
+  .campaign-grid,
   .module-grid,
-  .roadmap-grid {
+  .roadmap-grid,
+  .two-column-section,
+  .kpi-grid,
+  .bid-grid,
+  .integration-grid,
+  .connector-feed-grid {
     grid-template-columns: 1fr;
   }
 
-  .table-row {
+  .table-row,
+  .architecture-row {
     grid-template-columns: 1fr;
   }
 
   .table-head {
     display: none;
+  }
+
+  .nav {
+    align-items: flex-start;
+    gap: 20px;
+  }
+
+  .nav,
+  .nav-links {
+    flex-direction: column;
+  }
+
+  h1 {
+    font-size: clamp(3rem, 15vw, 5.6rem);
   }
 }
