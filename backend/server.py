@@ -360,21 +360,26 @@ async def root():
 @api_router.get("/dashboard/overview")
 async def dashboard_overview():
     campaigns = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
-    pmps = await db.pmps.find({}, {"_id": 0}).to_list(1000)
+    all_pmps = await db.pmps.find({}, {"_id": 0}).to_list(1000)
     data_cost = await db.data_cost.find({}, {"_id": 0}).to_list(1000)
     script_lift = await db.script_lift.find({}, {"_id": 0}).to_list(1000)
+
+    # Filter to only rows that match the expected pmp schema (defensive)
+    pmps = [p for p in all_pmps if "outcome_adjusted_score" in p and "verified_reach" in p]
 
     total_budget = sum(c.get("budget", 0) for c in campaigns)
     total_spent = sum(c.get("spent", 0) for c in campaigns)
     active = sum(1 for c in campaigns if c.get("status") == "Active")
-    total_spend = sum(d["total_spend"] for d in data_cost)
-    total_working = sum(d["working_media"] for d in data_cost)
+    total_spend = sum(d.get("total_spend", 0) for d in data_cost)
+    total_working = sum(d.get("working_media", 0) for d in data_cost)
     working_media_pct = round(total_working / total_spend * 100, 1) if total_spend else 0
-    verified_reach = round(sum(p["verified_reach"] for p in pmps) / len(pmps) * 100, 1) if pmps else 0
-    avg_supply_score = round(sum(p["outcome_adjusted_score"] for p in pmps) / len(pmps), 1) if pmps else 0
-    latest_lift = script_lift[-1]["lift_pct"] if script_lift else 0
+    verified_reach = round(sum(p.get("verified_reach", 0) for p in pmps) / len(pmps) * 100, 1) if pmps else 0
+    avg_supply_score = round(sum(p.get("outcome_adjusted_score", 0) for p in pmps) / len(pmps), 1) if pmps else 0
+    latest_lift = script_lift[-1].get("lift_pct", 0) if script_lift else 0
 
     cost_per_quality_outcome = round(total_spend / max(sum(p.get("impressions", 0) for p in pmps) / 1000 * 0.04, 1), 2)
+
+    pmps_sorted = sorted(pmps, key=lambda p: p.get("outcome_adjusted_score", 0), reverse=True)
 
     return {
         "kpis": {
@@ -389,8 +394,8 @@ async def dashboard_overview():
             "cost_per_quality_outcome": cost_per_quality_outcome,
         },
         "script_lift_series": script_lift,
-        "top_pmps": pmps[:5],
-        "channels": [d["channel"] for d in data_cost],
+        "top_pmps": pmps_sorted[:5],
+        "channels": [d.get("channel") for d in data_cost if d.get("channel")],
     }
 
 
@@ -488,26 +493,27 @@ async def rtb_simulate(req: RTBSimulateRequest):
 @api_router.post("/ai/recommendations")
 async def ai_recommendations():
     """Stream Claude Sonnet 4.5 narrative insights about top PMPs/campaigns."""
-    pmps = await db.pmps.find({}, {"_id": 0}).to_list(1000)
+    pmps_all = await db.pmps.find({}, {"_id": 0}).to_list(1000)
+    pmps = [p for p in pmps_all if "outcome_adjusted_score" in p and "verified_reach" in p]
     campaigns = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
     data_cost = await db.data_cost.find({}, {"_id": 0}).to_list(1000)
     audiences = await db.audiences.find({}, {"_id": 0}).to_list(1000)
 
-    pmps_sorted = sorted(pmps, key=lambda p: p["outcome_adjusted_score"], reverse=True)
+    pmps_sorted = sorted(pmps, key=lambda p: p.get("outcome_adjusted_score", 0), reverse=True)
     top = pmps_sorted[:3]
     bottom = pmps_sorted[-3:]
-    total_spend = sum(d["total_spend"] for d in data_cost)
-    total_working = sum(d["working_media"] for d in data_cost)
+    total_spend = sum(d.get("total_spend", 0) for d in data_cost)
+    total_working = sum(d.get("working_media", 0) for d in data_cost)
     wm_pct = round(total_working / total_spend * 100, 1) if total_spend else 0
 
     context = {
-        "top_pmps": [{"vendor": p["vendor"], "score": p["outcome_adjusted_score"],
-                      "script_lift": p["script_lift_pct"], "wm": p["working_media_efficiency"]} for p in top],
-        "bottom_pmps": [{"vendor": p["vendor"], "score": p["outcome_adjusted_score"],
-                         "data_drag": p["data_cost_drag"]} for p in bottom],
+        "top_pmps": [{"vendor": p.get("vendor"), "score": p.get("outcome_adjusted_score"),
+                      "script_lift": p.get("script_lift_pct"), "wm": p.get("working_media_efficiency")} for p in top],
+        "bottom_pmps": [{"vendor": p.get("vendor"), "score": p.get("outcome_adjusted_score"),
+                         "data_drag": p.get("data_cost_drag")} for p in bottom],
         "working_media_pct": wm_pct,
         "active_campaigns": sum(1 for c in campaigns if c.get("status") == "Active"),
-        "low_match_audiences": [a["name"] for a in audiences if a["match_rate_forecast"] < 0.5][:3],
+        "low_match_audiences": [a.get("name") for a in audiences if a.get("match_rate_forecast", 1) < 0.5][:3],
     }
 
     prompt = f"""You are a senior pharma programmatic strategist analyzing a healthcare DSP campaign portfolio.
@@ -549,33 +555,72 @@ Be senior, commercial, decisive. No fluff. Reference specific vendors and number
     )
 
 
+DATASET_REQUIRED_COLUMNS = {
+    "pmps": {"vendor", "outcome_adjusted_score", "verified_reach", "engagement_quality",
+             "script_lift_pct", "working_media_efficiency", "match_rate",
+             "data_cost_drag", "fraud_risk", "spend"},
+    "audiences": {"name", "type", "match_rate_forecast", "data_cpm",
+                  "working_media_ratio", "audience_quality_score", "rx_relevance_score"},
+    "ga4": {"channel", "sessions", "engaged_sessions", "engagement_rate",
+            "quality_visits", "conversions"},
+    "data_cost": {"line_item", "channel", "total_spend", "data_fees",
+                  "platform_fees", "working_media", "working_media_pct"},
+    "script_lift": {"week", "exposed_rx_index", "control_rx_index", "lift_pct"},
+    "campaigns": {"name", "brand", "indication", "campaign_type", "budget"},
+}
+
+
 @api_router.post("/upload/{dataset}")
 async def upload_csv(dataset: str, file: UploadFile = File(...)):
-    """Generic CSV uploader for pmps/audiences/ga4/data_cost."""
-    allowed = {"pmps", "audiences", "ga4", "data_cost", "script_lift", "campaigns"}
-    if dataset not in allowed:
-        raise HTTPException(400, f"Dataset must be one of {allowed}")
+    """CSV uploader with per-dataset schema validation.
+
+    Required columns are validated against the seed schema. Rows missing
+    required columns are rejected (no partial inserts) to keep downstream
+    dashboards and AI insights consistent.
+    """
+    if dataset not in DATASET_REQUIRED_COLUMNS:
+        raise HTTPException(400, f"Dataset must be one of {sorted(DATASET_REQUIRED_COLUMNS)}")
     raw = await file.read()
     text = raw.decode("utf-8", errors="ignore")
     reader = csv.DictReader(io.StringIO(text))
     rows = list(reader)
-    # Attempt numeric coercion
+    if not rows:
+        raise HTTPException(400, "CSV is empty or unreadable.")
+
+    required = DATASET_REQUIRED_COLUMNS[dataset]
+    header = set(reader.fieldnames or [])
+    missing_cols = required - header
+    if missing_cols:
+        raise HTTPException(
+            400,
+            f"CSV is missing required columns for '{dataset}': {sorted(missing_cols)}. "
+            f"Required: {sorted(required)}",
+        )
+
+    cleaned = []
+    rejected = 0
     for r in rows:
+        # Numeric coercion
         for k, v in list(r.items()):
             if v is None or v == "":
                 continue
             try:
-                if "." in v:
-                    r[k] = float(v)
-                else:
-                    r[k] = int(v)
+                r[k] = float(v) if "." in v else int(v)
             except (ValueError, TypeError):
                 pass
-        if "id" not in r:
+        # Row-level required-value check
+        if any(r.get(c) in (None, "") for c in required):
+            rejected += 1
+            continue
+        if "id" not in r or not r["id"]:
             r["id"] = str(uuid.uuid4())
-    if rows:
-        await db[dataset].insert_many(rows)
-    return {"dataset": dataset, "rows_inserted": len(rows)}
+        cleaned.append(r)
+
+    if not cleaned:
+        raise HTTPException(400, "All rows rejected — required values missing.")
+
+    await db[dataset].insert_many(cleaned)
+    return {"dataset": dataset, "rows_inserted": len(cleaned), "rows_rejected": rejected}
 
 
 @api_router.post("/admin/reseed")
