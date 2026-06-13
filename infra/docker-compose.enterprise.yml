@@ -27,9 +27,9 @@ services:
     environment:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: pharma_signal
-      JWT_SECRET: local-dev-secret
+      JWT_SECRET: local-dev-only
       ADMIN_EMAIL: admin@pharmasignal.io
-      ADMIN_PASSWORD: Admin@2026
+      ADMIN_PASSWORD: change-me-local
       CORS_ORIGINS: "*"
     depends_on:
       - mongo
@@ -44,6 +44,19 @@ services:
     ports:
       - "8080:8080"
 
+  full-dsp-api:
+    image: python:3.11-slim
+    container_name: pharma-signal-full-dsp-api
+    working_dir: /app/backend
+    command: sh -c "pip install -r requirements.txt && uvicorn full_dsp_server:app --host 0.0.0.0 --port 8090 --reload"
+    volumes:
+      - ../:/app
+    ports:
+      - "8090:8090"
+    environment:
+      FULL_DSP_DB: /app/backend/pharma_signal_dsp.db
+      FULL_DSP_DEV_PASSWORD: change-me-local
+
   frontend:
     image: node:20-alpine
     container_name: pharma-signal-frontend
@@ -56,9 +69,12 @@ services:
     environment:
       VITE_ENTERPRISE_API_URL: http://localhost:8080
       VITE_API_URL: http://localhost:8001
+      VITE_FULL_DSP_API_URL: http://localhost:8090
+      VITE_FULL_DSP_DEV_PASSWORD: change-me-local
     depends_on:
       - backend
       - enterprise-api
+      - full-dsp-api
 
 volumes:
   pharma_signal_mongo:
