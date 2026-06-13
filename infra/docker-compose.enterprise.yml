@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: pharma-signal-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - pharma_signal_mongo:/data/db
+
+  redis:
+    image: redis:7-alpine
+    container_name: pharma-signal-redis
+    ports:
+      - "6379:6379"
+
+  backend:
+    image: python:3.11-slim
+    container_name: pharma-signal-backend
+    working_dir: /app/backend
+    command: sh -c "pip install -r requirements.txt && uvicorn server:app --host 0.0.0.0 --port 8001 --reload"
+    volumes:
+      - ../:/app
+    ports:
+      - "8001:8001"
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: pharma_signal
+      JWT_SECRET: local-dev-secret
+      ADMIN_EMAIL: admin@pharmasignal.io
+      ADMIN_PASSWORD: Admin@2026
+      CORS_ORIGINS: "*"
+    depends_on:
+      - mongo
+
+  enterprise-api:
+    image: python:3.11-slim
+    container_name: pharma-signal-enterprise-api
+    working_dir: /app/backend
+    command: sh -c "pip install -r requirements.txt && uvicorn enterprise_server:app --host 0.0.0.0 --port 8080 --reload"
+    volumes:
+      - ../:/app
+    ports:
+      - "8080:8080"
+
+  frontend:
+    image: node:20-alpine
+    container_name: pharma-signal-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - ../:/app
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_ENTERPRISE_API_URL: http://localhost:8080
+      VITE_API_URL: http://localhost:8001
+    depends_on:
+      - backend
+      - enterprise-api
+
+volumes:
+  pharma_signal_mongo:
