@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements-full-dsp.txt
 # Persisted SQLite location (mount a volume/disk here in production).
 RUN mkdir -p /data
 
-COPY full_dsp_server.py .
+COPY full_dsp_server.py storage.py .
 
 EXPOSE 8090
 

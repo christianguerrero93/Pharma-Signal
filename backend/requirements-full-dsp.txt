@@ -1,7 +1,11 @@
 # Lean runtime dependencies for the Full DSP API (backend/full_dsp_server.py).
 # The full backend/requirements.txt pins emergentintegrations and a Mongo/pandas
 # stack that the Full DSP service does not use and that is not installable from
-# public PyPI. The Full DSP server only needs FastAPI + an ASGI server.
+# public PyPI. The Full DSP server only needs FastAPI + an ASGI server, bcrypt
+# for password hashing, and psycopg when DATABASE_URL points at Postgres.
+# JWTs are signed with the stdlib (hmac), so no cryptography dependency is needed.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
+bcrypt==4.2.1
+psycopg[binary]==3.2.3

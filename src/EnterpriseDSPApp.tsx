@@ -656,8 +656,14 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
               <div className="metric-card"><span>Bid rate</span><strong>{pct1(sim.bid_rate)}</strong></div>
               <div className="metric-card"><span>Win rate</span><strong>{pct1(sim.win_rate)}</strong></div>
               <div className="metric-card"><span>Impressions won</span><strong>{num(sim.impressions_won)}</strong></div>
-              <div className="metric-card"><span>Avg clearing CPM</span><strong>{money2(sim.avg_clearing_cpm)}</strong></div>
+              <div className="metric-card"><span>Avg clearing (2nd price)</span><strong>{money2(sim.avg_clearing_cpm)}</strong></div>
+              <div className="metric-card"><span>2nd-price CPM</span><strong>{money2(sim.avg_second_price_cpm)}</strong></div>
               <div className="metric-card"><span>Est. spend</span><strong>{money(sim.est_spend)}</strong></div>
+              <div className="metric-card"><span>Budget utilization</span><strong>{pct1(sim.budget_utilization)}</strong></div>
+              <div className="metric-card"><span>Unique reach</span><strong>{num(sim.unique_reach)}</strong></div>
+              <div className="metric-card"><span>Avg frequency</span><strong>{sim.avg_frequency}x</strong></div>
+              <div className="metric-card"><span>Frequency capped</span><strong>{num(sim.frequency_capped)}</strong></div>
+              <div className="metric-card"><span>Pace throttled</span><strong>{num(sim.pace_throttled)}</strong></div>
               <div className="metric-card"><span>PHI blocked</span><strong className="warn">{num(sim.phi_blocked)}</strong></div>
             </div>
             <div className="decision-bar">

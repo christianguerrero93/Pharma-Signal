@@ -27,7 +27,9 @@ Set these in the Render dashboard:
 | Variable | Value |
 | --- | --- |
 | `FULL_DSP_DEV_PASSWORD` | a real seed password (replaces `pharma-signal-local`) |
-| `FULL_DSP_DB` | `/data/pharma_signal_dsp.db` (already set by the blueprint) |
+| `FULL_DSP_JWT_SECRET` | a strong random string used to sign login JWTs |
+| `FULL_DSP_DB` | `/data/pharma_signal_dsp.db` (already set by the blueprint; ignored if `DATABASE_URL` is set) |
+| `DATABASE_URL` | *(optional)* `postgresql://user:pass@host:5432/db` to use Postgres instead of SQLite |
 
 Your API URL will look like `https://pharma-signal-api.onrender.com`.
 
@@ -79,7 +81,24 @@ Same idea: set `VITE_FULL_DSP_API_URL` in the project's environment variables, b
 
 ---
 
-## 3. CORS
+## 3. Database: SQLite or Postgres
+
+The Full DSP API stores data through a small abstraction (`backend/storage.py`):
+
+- **Default — SQLite.** Zero config. The file lives at `FULL_DSP_DB`; mount a disk there to persist it.
+- **Postgres.** Set `DATABASE_URL=postgresql://user:pass@host:5432/db` and the same code runs against Postgres (via `psycopg`, included in the image). Schema is created on first boot. Recommended for multi-instance / production deployments.
+
+On Render you can add a managed Postgres and wire its connection string into `DATABASE_URL`.
+
+## 4. Authentication
+
+Login issues an **HS256 JWT** (signed with `FULL_DSP_JWT_SECRET`, stdlib `hmac` — no
+heavy crypto dependency) and passwords are hashed with **bcrypt**. Endpoints enforce
+**role-based access** (`admin`, `trader`, `analyst`): campaign/line-item/audience/deal
+writes require `admin` or `trader`; MLR creative review requires `admin` or `analyst`.
+Always set a strong `FULL_DSP_JWT_SECRET` in production.
+
+## 5. CORS
 
 The backend already sends permissive CORS headers
 (`allow_origins=["*"]`), so the static frontend can call it cross-origin from
@@ -88,7 +107,7 @@ Netlify/Vercel out of the box. To lock it down, restrict the origins in
 
 ---
 
-## 4. Local full stack
+## 6. Local full stack
 
 ```bash
 # backend

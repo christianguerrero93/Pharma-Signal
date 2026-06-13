@@ -59,6 +59,10 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
 - **Compliance & governance** — no-PHI enforcement, consent-at-auction, MLR gating,
   brand-safety findings, a compliance score, and **cross-channel HCP + DTC frequency
   coordination** (the pain point generic DSPs leave to spreadsheets).
+- **Security & persistence** — HS256 JWT auth (stdlib-signed), bcrypt password
+  hashing, and enforced role-based access (`admin` / `trader` / `analyst`). Storage
+  runs on SQLite by default or **Postgres** when `DATABASE_URL` is set, via a single
+  abstraction (`backend/storage.py`).
 
 ### Product experience
 
