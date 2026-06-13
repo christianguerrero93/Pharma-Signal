@@ -12,8 +12,12 @@ import {
   Zap,
 } from 'lucide-react';
 import { architectureLayers, audienceSegments, bidRequests, campaigns, complianceControls, integrations, pacingSnapshots, supplyPartners } from './data/dsp';
+import { pharmaAuctionRequests } from './data/openRtbSamples';
 import { mockGa4Sync, mockMeasurementSync, mockSspDeliverySync } from './connectors/partnerAdapters';
 import { buildMeasurementPlan, calculateBidDecision, calculatePacing, formatCurrency, formatNumber, scoreSupplyPartner } from './lib/dspEngine';
+import { optimizePortfolioBudget } from './lib/budgetOptimizer';
+import { buildAuditTrail, evaluateActivationApproval } from './lib/controlPlane';
+import { runPharmaAuction } from './lib/openRtb';
 import type { BidDecision, Campaign, MeasurementPlan } from './types';
 
 type BidDecisionRow = {
@@ -103,6 +107,16 @@ function App() {
 
   const measurementReadyCount = measurementRows.filter((row) => row.plan.powerScore >= 70).length;
   const connectorFeeds = [mockGa4Sync(), mockSspDeliverySync(), mockMeasurementSync()];
+  const auctionRows = pharmaAuctionRequests.map((request) => ({
+    request,
+    result: runPharmaAuction(request, campaigns, supplyPartners),
+  }));
+  const portfolioOptimization = optimizePortfolioBudget(campaigns, pacingSnapshots, supplyPartners);
+  const auditTrail = buildAuditTrail(campaigns, supplyPartners).slice(0, 8);
+  const approvalChecks = campaigns.slice(0, 4).map((campaign, index) =>
+    evaluateActivationApproval(campaign, supplyPartners[index % supplyPartners.length], integrations[index % integrations.length]),
+  );
+  const optimizedDelta = portfolioOptimization.totalRecommendedBudget - portfolioOptimization.totalCurrentBudget;
 
   return (
     <main>
@@ -117,7 +131,8 @@ function App() {
           </div>
           <div className="nav-links">
             <a href="#bidder">Bidder</a>
-            <a href="#measurement">Measurement</a>
+            <a href="#auction">OpenRTB</a>
+            <a href="#optimizer">Optimizer</a>
             <a href="#architecture">Architecture</a>
           </div>
         </nav>
@@ -127,7 +142,7 @@ function App() {
             <p className="eyebrow">Pharma-native demand-side platform</p>
             <h1>The DSP layer built around healthcare outcomes.</h1>
             <p className="hero-copy">
-              Pharma Signal connects campaign strategy, audience quality, supply path economics, bid logic, frequency, measurement readiness, and compliance before media dollars are wasted. The goal is simple: make every bid defensible against business impact.
+              Pharma Signal connects campaign strategy, audience quality, supply path economics, bid logic, frequency, measurement readiness, compliance, and OpenRTB-style activation before media dollars are wasted. The goal is simple: make every bid defensible against business impact.
             </p>
             <div className="hero-actions">
               <a href="#command-center" className="primary-button">Open command center</a>
@@ -144,7 +159,7 @@ function App() {
               <Activity />
             </div>
             <p>
-              The platform is ready for planning, simulation, partner QA, measurement forecasting, and Netlify deployment. Real-time bidding is represented as a typed scoring engine ready to move into a low-latency service.
+              The platform now includes planning, simulation, partner QA, measurement forecasting, portfolio optimization, control-plane audit logic, and an OpenRTB pharma auction simulator.
             </p>
             <div className="meter"><span style={{ width: `${averageSupplyScore}%` }} /></div>
             <div className="metric-row">
@@ -156,8 +171,8 @@ function App() {
               <strong>{formatNumber(totalReach)}</strong>
             </div>
             <div className="metric-row">
-              <span>Measurement-ready plans</span>
-              <strong>{measurementReadyCount}/{measurementRows.length}</strong>
+              <span>OpenRTB auctions</span>
+              <strong>{auctionRows.length} simulated</strong>
             </div>
           </div>
         </div>
@@ -168,7 +183,7 @@ function App() {
           <p className="eyebrow">Command center</p>
           <h2>One view for planning, activation, bidding, and proof.</h2>
           <p>
-            The MVP now behaves like a real DSP control layer: every campaign has budget, frequency, outcome, compliance, pacing, supply, audience, and measurement logic attached.
+            The MVP behaves like a real DSP control layer: every campaign has budget, frequency, outcome, compliance, pacing, supply, audience, measurement, auction, and optimization logic attached.
           </p>
         </div>
 
@@ -186,7 +201,7 @@ function App() {
           <div className="kpi-card">
             <BrainCircuit />
             <span>Bid engine</span>
-            <strong>{bidDecisionRows.length} simulated requests</strong>
+            <strong>{bidDecisionRows.length + auctionRows.length} simulated decisions</strong>
           </div>
           <div className="kpi-card">
             <ClipboardCheck />
@@ -262,6 +277,45 @@ function App() {
         </div>
       </section>
 
+      <section id="auction" className="section">
+        <div className="section-heading">
+          <p className="eyebrow">OpenRTB auction gateway</p>
+          <h2>Pharma-safe bid responses with compliance checks before price.</h2>
+          <p>
+            This layer turns the static bid model into a DSP-style auction flow: receive request, validate pharma guardrails, price the bid, return a response, and queue event-stream logs.
+          </p>
+        </div>
+        <div className="auction-grid">
+          {auctionRows.map(({ request, result }) => (
+            <article className={`auction-card decision-${result.decision === 'no_bid' ? 'reject' : result.decision}`} key={request.id}>
+              <div className="panel-title">
+                <div>
+                  <p className="eyebrow">{request.inventory.channel} · {request.inventory.domainOrApp}</p>
+                  <h3>{request.id}</h3>
+                </div>
+                <span>{result.decisionLabel}</span>
+              </div>
+              <div className="mini-metrics">
+                <span><strong>{request.audienceMatch}</strong> audience</span>
+                <span><strong>{request.contextualRelevance}</strong> context</span>
+                <span><strong>{request.outcomeSignal}</strong> outcome</span>
+                <span><strong>{result.latencyBudgetMs}ms</strong> SLA</span>
+              </div>
+              <p>{request.inventory.placement} · floor {formatCurrency(request.inventory.bidFloorCpm)} CPM</p>
+              {result.response && (
+                <div className="response-box">
+                  <span>Creative {result.response.creativeId}</span>
+                  <strong>{formatCurrency(result.response.clearingPriceCpm)} clearing CPM</strong>
+                </div>
+              )}
+              <div className="event-log">
+                {result.eventLog.map((event) => <code key={event}>{event}</code>)}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
       <section className="section">
         <div className="section-heading">
           <p className="eyebrow">Supply path scorecard</p>
@@ -284,6 +338,61 @@ function App() {
               <span>{partner.recommendation}</span>
             </div>
           ))}
+        </div>
+      </section>
+
+      <section id="optimizer" className="section two-column-section">
+        <div>
+          <div className="section-heading">
+            <p className="eyebrow">Portfolio optimizer</p>
+            <h2>Budget recommendations tied to pacing, priority, supply quality, and conversion depth.</h2>
+            <p>
+              Current portfolio budget is {formatCurrency(portfolioOptimization.totalCurrentBudget)}. The optimizer recommends {formatCurrency(portfolioOptimization.totalRecommendedBudget)}, a net change of {formatCurrency(optimizedDelta)}.
+            </p>
+          </div>
+          <div className="optimizer-grid">
+            {portfolioOptimization.recommendations.map((recommendation) => (
+              <article className={`optimizer-card optimizer-${recommendation.status}`} key={recommendation.campaignId}>
+                <div className="panel-title">
+                  <div>
+                    <p className="eyebrow">{recommendation.status}</p>
+                    <h3>{recommendation.brand}</h3>
+                  </div>
+                  <span>{recommendation.confidence}% confidence</span>
+                </div>
+                <div className="mini-metrics">
+                  <span><strong>{formatCurrency(recommendation.currentBudget)}</strong> current</span>
+                  <span><strong>{formatCurrency(recommendation.recommendedBudget)}</strong> rec.</span>
+                  <span><strong>{formatCurrency(recommendation.delta)}</strong> delta</span>
+                </div>
+                <p>{recommendation.rationale}</p>
+                <div className="risk-box">
+                  {recommendation.guardrails.map((guardrail) => <span key={guardrail}>{guardrail}</span>)}
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="section-heading compact-heading">
+            <p className="eyebrow">Control plane</p>
+            <h2>Approvals and audit logs before activation.</h2>
+          </div>
+          <div className="stacked-list">
+            {approvalChecks.map((approval) => (
+              <article className={`list-card approval-${approval.status}`} key={approval.entity}>
+                <div className="panel-title">
+                  <h3>{approval.entity}</h3>
+                  <span>{approval.status.replace('_', ' ')}</span>
+                </div>
+                <ul>
+                  {approval.checks.map((check) => <li key={check}>{check}</li>)}
+                </ul>
+                <small>Approvers: {approval.approvers.join(', ')}</small>
+              </article>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -431,6 +540,24 @@ function App() {
               </div>
             ))}
           </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="section-heading">
+          <p className="eyebrow">Audit stream</p>
+          <h2>Every meaningful DSP change should leave a trail.</h2>
+        </div>
+        <div className="audit-table">
+          {auditTrail.map((event) => (
+            <div className="audit-row" key={event.id}>
+              <strong>{event.entity}</strong>
+              <span>{event.role}</span>
+              <p>{event.action}</p>
+              <span>{event.riskLevel}</span>
+              <span>{event.requiresApproval ? 'approval required' : 'logged'}</span>
+            </div>
+          ))}
         </div>
       </section>
     </main>
