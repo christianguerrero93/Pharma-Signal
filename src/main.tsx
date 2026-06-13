@@ -1,11 +1,12 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './App';
+import EnterpriseDSPApp from './EnterpriseDSPApp';
 import './styles.css';
 import './dspContinuation.css';
+import './enterpriseDsp.css';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <EnterpriseDSPApp />
   </React.StrictMode>,
 );
