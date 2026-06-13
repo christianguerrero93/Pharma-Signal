@@ -203,7 +203,8 @@ This starts:
 
 ## Deployment (full stack)
 
-See **[`docs/deployment.md`](docs/deployment.md)** for the complete guide. In short:
+See the **[Deployment Manual](docs/DEPLOY_MANUAL.md)** for the full click-by-click
+runbook, or **[`docs/deployment.md`](docs/deployment.md)** for reference detail. In short:
 
 1. **Deploy the backend** (`backend/full_dsp_server.py`) as a container — a
    `backend/Dockerfile` and a Render `render.yaml` blueprint are included. It binds
