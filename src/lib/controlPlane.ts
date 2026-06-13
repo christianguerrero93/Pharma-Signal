@@ -22,10 +22,10 @@ export type ActivationApproval = {
 
 export function buildAuditTrail(campaigns: Campaign[], partners: SupplyPartner[]): ControlPlaneAction[] {
   const now = new Date().toISOString();
-  const campaignActions = campaigns.map((campaign, index) => ({
+  const campaignActions: ControlPlaneAction[] = campaigns.map((campaign, index) => ({
     id: `audit-campaign-${index + 1}`,
     actor: 'platform@pharmasignal.local',
-    role: 'trader' as UserRole,
+    role: 'trader',
     action: `Updated pacing and bid guardrails for ${campaign.brand}`,
     entity: campaign.id,
     riskLevel: campaign.complianceNotes.length > 2 ? 'high' : 'medium',
@@ -33,10 +33,10 @@ export function buildAuditTrail(campaigns: Campaign[], partners: SupplyPartner[]
     createdAt: now,
   }));
 
-  const partnerActions = partners.map((partner, index) => ({
+  const partnerActions: ControlPlaneAction[] = partners.map((partner, index) => ({
     id: `audit-partner-${index + 1}`,
     actor: 'supply-ops@pharmasignal.local',
-    role: 'admin' as UserRole,
+    role: 'admin',
     action: `Validated ${partner.name} supply configuration and deal QA status`,
     entity: partner.id,
     riskLevel: partner.status === 'QA Required' ? 'high' : 'low',
