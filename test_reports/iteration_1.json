@@ -1,0 +1,66 @@
+{
+  "summary": "Comprehensive backend + frontend test of PharmaSignal DSP. 14/14 pytest backend tests pass on first invocation. Frontend dashboard, audiences, PMPs, data-cost, GA4, script-lift, RTB simulator, AI streaming, vendors, upload pages all render and integrate with backend. Found one CRITICAL backend bug: POST /api/upload/{dataset} performs no schema validation, so uploading an arbitrary CSV (e.g., vendor,score) into 'pmps' inserts malformed rows that subsequently break /api/pmps, /api/dashboard/overview, and /api/ai/recommendations (KeyError: 'outcome_adjusted_score' / 'verified_reach'). After hitting POST /api/admin/reseed, the system fully recovers.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/upload/{dataset}",
+        "issue": "No schema validation. Inserting any CSV (e.g. vendor,score) into 'pmps' dataset corrupts the collection. Subsequent GET /api/pmps, GET /api/dashboard/overview, and POST /api/ai/recommendations return HTTP 500 with KeyError: 'outcome_adjusted_score' / 'verified_reach' because endpoints assume seed-shape documents. Real users can permanently break the dashboard by uploading via the Data Upload page until an admin calls /api/admin/reseed.",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {"endpoint": "POST /api/upload/{dataset}", "issue": "Endpoint accepts an empty CSV without rows and returns rows_inserted:0 — should probably 400 on empty/malformed input."},
+      {"endpoint": "POST /api/ai/recommendations", "issue": "Errors inside the streaming generator are swallowed and yielded as plain text (HTTP 200). Frontend can't distinguish a real LLM failure from a successful response. Consider yielding a typed error or setting an X-AI-Error header."},
+      {"endpoint": "GET /api/dashboard/overview", "issue": "Defensively guard for empty/malformed pmps docs (use .get with default) so a single bad row doesn't 500 the entire dashboard."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Data Upload -> Dashboard",
+        "issue": "After a user uploads any CSV to the 'pmps' dataset via /upload, the Dashboard page shows an Uncaught runtime error overlay (Axios 500 from /api/dashboard/overview). Root cause is the backend upload bug above; UI also lacks any error boundary / friendly fallback for the dashboard.",
+        "affected_selectors": ["[data-testid='dashboard-page']", "[data-testid='kpi-budget']"]
+      },
+      {
+        "flow": "AI Recommendations streaming",
+        "issue": "AIRecommendations.jsx checks resp.ok but the backend always returns 200 (errors are streamed as text). When the LLM fails mid-stream the user sees a partial '[AI recommendation engine unavailable: ...]' message with no UI indication of failure."
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmasignal.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Add Pydantic schema validation per dataset in POST /api/upload/{dataset} (only insert rows that match expected columns; reject the upload otherwise with 400 and clear field-level errors).",
+    "Make /api/dashboard/overview, /api/pmps, /api/vendors and /api/ai/recommendations resilient to malformed docs (use .get('outcome_adjusted_score', 0), filter out incomplete rows).",
+    "Consider returning a structured error event (or non-200 status) from /api/ai/recommendations when the LLM call fails so the UI can render a proper error state.",
+    "Add an ErrorBoundary around the dashboard route so a 500 doesn't break the whole app shell with a red runtime overlay."
+  ],
+  "critical_code_review_comments": [
+    "server.py /api/upload accepts any column shape and pushes raw dicts to Mongo — no validation, no allowlist of columns; high blast radius since reads assume the seed schema.",
+    "All GET endpoints read with {'_id': 0} (good) and exclude ObjectId — OK.",
+    "ensure_seed() is idempotent via seed_meta doc, but only the seed_meta doc gates seeding. If a user uploads garbage into pmps the seed will NOT re-run automatically — operational footgun.",
+    "Frontend api.js has no global axios interceptor for errors; every page silently fails on rejected promises (Dashboard .then(setData) has no .catch).",
+    "AIRecommendations.jsx assumes resp.ok means a real LLM response but backend wraps LLM failures in 200 + plain text — UX gap.",
+    "Layout/Dashboard pages have data-testid on all KPIs and charts — good test coverage hooks."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmasignal.py (new)",
+    "/app/test_reports/pytest/pytest_results.xml (generated)"
+  ],
+  "success_rate": {"backend": "100% (14/14 pytest)", "frontend": "100% routes render, all KPIs/charts/sliders/AI streaming verified after reseed"},
+  "test_credentials": "N/A — open-access MVP, no auth",
+  "seed_data_creation": "Backend auto-seeds on startup (idempotent via seed_meta). Called POST /api/admin/reseed once during testing to recover from the upload-induced data corruption.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "If you hit 500s on /api/dashboard/overview or /api/pmps, the pmps collection has been corrupted by a CSV upload — POST /api/admin/reseed to recover. Backend test suite at /app/backend/tests/test_pharmasignal.py is intentionally simple: a vendor,score CSV upload into 'pmps' is the trigger for the bug we found. After main agent fixes the upload validation, re-run pytest and the frontend dashboard should remain stable even after running TestUpload.",
+  "rca of the issue": {
+    "bug": "Dashboard/PMPs/AI endpoints return 500 after CSV upload to pmps dataset.",
+    "root_cause": "/api/upload/{dataset} in server.py (lines 552-578) blindly insert_many's any parsed CSV rows into db[dataset] without validating columns. Inserting {'vendor': 'X', 'score': 88} into pmps means subsequent reads call p['outcome_adjusted_score']/p['verified_reach'] and raise KeyError, which becomes a 500.",
+    "reproduction": "1) Start with seeded DB. 2) curl -F file=@small.csv https://.../api/upload/pmps where small.csv has columns vendor,score. 3) GET /api/dashboard/overview -> 500. 4) GET /api/pmps -> 500. 5) POST /api/ai/recommendations -> 500.",
+    "mitigation": "Either (a) define a Pydantic model per dataset and validate every row before insert, dropping or rejecting non-conforming rows, or (b) defensively use .get('field', 0) across all read endpoints and skip rows missing required keys. Long-term, do both."
+  }
+}
