@@ -4,27 +4,41 @@ Pharma Signal is a pharma-native DSP command center prototype focused on the gap
 
 It is not positioned as a generic DSP clone. The product direction is to connect the pieces healthcare media teams usually stitch together manually:
 
-- HCP, DTC, contextual, behavioral, and geography-based audience planning
-- Supply path quality across SSPs and curated PMPs
+- Campaign and line-item planning
+- HCP, DTC, contextual, behavioral, geography, and retargeting audience strategy
+- Supply path quality across SSPs, curated PMPs, CTV, endemic health, and open web
 - Data-cost visibility and working-media efficiency
 - Outcome-aware bid logic
 - GA4 and downstream engagement signals
 - Rx / script-lift style measurement planning
 - Compliance, audit, and no-PHI guardrails
 
-## Current build
+## What is included now
 
-This repository currently contains a Netlify-ready React + Vite MVP dashboard.
+This repository contains a Netlify-ready React + Vite application with a typed DSP simulation layer.
 
-### Included modules
+### Product experience
 
 - Pharma Signal landing and product narrative
-- Campaign intelligence cards
-- Supply partner scorecard for PubMatic, Magnite, OpenX, and Index Exchange
-- Prototype bid decision formula
-- Architecture module cards
-- Product roadmap
-- Netlify deployment config
+- Campaign command center
+- Supply partner scorecard for PubMatic, Magnite, OpenX, Index Exchange, and endemic health supply
+- Audience activation model for HCP, DTC, retargeting, and contextual signals
+- Bid-decision simulator with bid / throttle / reject logic
+- Pacing intelligence by campaign
+- Measurement-power planner with expected conversions, exposed/control sizing, and minimum detectable lift
+- Partner integration module
+- Compliance-control module
+- Architecture and roadmap sections
+
+### Engineering modules
+
+- `src/types.ts` — DSP domain types
+- `src/data/dsp.ts` — modeled campaign, audience, supply, pacing, compliance, and integration data
+- `src/lib/dspEngine.ts` — supply scoring, working-media ratio, bid decisioning, pacing, and measurement logic
+- `src/connectors/partnerAdapters.ts` — mocked GA4, SSP delivery, and outcome-measurement connectors
+- `docs/dsp-architecture.md` — production architecture blueprint
+- `docs/integration-roadmap.md` — phased build roadmap
+- `.env.example` — environment variable template for future live connectors
 
 ## Local development
 
@@ -49,35 +63,46 @@ Connect this repository to Netlify and use:
 
 The `netlify.toml` file is already included.
 
-## Product roadmap
+## Production DSP roadmap
 
-### MVP
+### Phase 1: Hosted MVP
 
-- Static command center UI
-- Supply path scoring logic
-- Campaign intelligence cards
-- Bid logic explanation
-- Netlify hosting
+- Static Netlify-hosted command center
+- Typed bid and measurement logic
+- Mock connectors
+- Pharma-specific product narrative
 
-### Next build
+### Phase 2: Data ingestion
 
-- CSV/XLSX upload for campaign performance and supply reports
-- Measurement planner for conversions, exposed/control sizing, and statistical confidence
-- Bid simulator with adjustable audience value, supply quality, data cost, frequency, and outcome signal
-- GA4 connector scaffold
-- SSP deal QA module
-- Partner adapter stubs for Swoop/Crossix-style measurement, DeepIntent-style Rx reporting, verification partners, and SSPs
+- CSV/XLSX upload for campaign delivery
+- GA4 Data API connector
+- SSP delivery imports
+- Audience metadata validation
+- Partner deal QA module
 
-### Long-term DSP architecture
+### Phase 3: Backend control plane
 
-- Next.js or React frontend
-- Python FastAPI control plane
-- PostgreSQL for campaign, user, and configuration data
-- Redis or Aerospike for low-latency bidding state
-- ClickHouse or BigQuery for event logs and analytics
-- Go/Rust/Java OpenRTB bidder
-- Kafka/Flink streaming for impression, click, conversion, and outcome events
-- Audit logs, RBAC, privacy-safe measurement, and no PHI storage
+- FastAPI or Node API
+- PostgreSQL campaign configuration
+- Auth and RBAC
+- Audit logs
+- Approval workflow
+
+### Phase 4: OpenRTB bidder
+
+- Go / Rust / Java bidder service
+- Redis or Aerospike for pacing and frequency state
+- Kafka or Flink event streaming
+- Bid response generation
+- Partner-specific SSP adapters
+
+### Phase 5: Outcome optimization
+
+- Crossix/Swoop-style measurement imports
+- Lift-readiness modeling
+- Supply-path incrementality comparison
+- Automated bid multiplier recommendations
+- Budget and frequency optimization
 
 ## Positioning
 
