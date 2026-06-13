@@ -5,7 +5,7 @@ import PageHeader from "@/components/PageHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
@@ -70,6 +70,7 @@ export default function CampaignDetail() {
             <DialogContent className="max-w-3xl">
               <DialogHeader>
                 <DialogTitle>Link Audiences & PMPs</DialogTitle>
+                <DialogDescription>Attach audiences and supply deals to drive this campaign's performance reporting and bidder logic.</DialogDescription>
               </DialogHeader>
               <div className="grid grid-cols-2 gap-6">
                 <div>
