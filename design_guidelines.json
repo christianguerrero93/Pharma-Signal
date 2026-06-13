@@ -1,0 +1,128 @@
+{
+  "theme_archetype": {
+    "domain": "Health/Pharma B2B Dashboard",
+    "theme": "LIGHT",
+    "archetype": "4 (Swiss & High-Contrast)",
+    "reasoning": "As an enterprise DSP platform for traders and analytics leads, the interface must prioritize authority, clarity, and function. The dense data requirements (PMP, supply scores, Rx lift) necessitate a stark, high-contrast, Swiss-inspired 'Control Room' environment rather than a warm, soft consumer app.",
+    "emotion": "Authoritative, Precise, Data-Driven, Senior"
+  },
+  "typography": {
+    "headings": {
+      "family": "Manrope",
+      "weights": ["600", "700", "800"],
+      "tracking": "tracking-tight",
+      "usage": "Used for all dashboard titles, module names, and metric primary numbers."
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500"],
+      "tracking": "tracking-normal",
+      "usage": "Used for all functional UI elements, table data, labels, and analytical text."
+    },
+    "mono": {
+      "family": "IBM Plex Mono",
+      "weights": ["400", "500"],
+      "usage": "Crucial for the RTB bidding simulator, data cost arrays, match rates, NPI lists, and any tabular financial data."
+    },
+    "hierarchy": {
+      "h1": "text-3xl sm:text-4xl font-bold tracking-tight",
+      "h2": "text-xl sm:text-2xl font-semibold tracking-tight",
+      "h3": "text-lg font-medium",
+      "body": "text-sm",
+      "small_label": "text-xs font-semibold uppercase tracking-[0.1em] text-slate-500",
+      "metric_value": "text-3xl font-bold font-manrope tracking-tight"
+    }
+  },
+  "colors": {
+    "background": {
+      "app": "#f8fafc",
+      "surface": "#ffffff",
+      "surface_hover": "#f1f5f9"
+    },
+    "text": {
+      "primary": "#0f172a",
+      "secondary": "#64748b",
+      "tertiary": "#94a3b8"
+    },
+    "border": {
+      "default": "#e2e8f0",
+      "focus": "#3b82f6"
+    },
+    "brand": {
+      "primary": "#1e3a8a",
+      "cta": "#2563eb",
+      "cta_hover": "#1d4ed8"
+    },
+    "data_visualization": {
+      "good_lift": "#059669",
+      "warning_waste": "#d97706",
+      "critical_risk": "#dc2626",
+      "audience_reach": "#3b82f6",
+      "supply_score": "#4f46e5",
+      "neutral_control": "#cbd5e1"
+    },
+    "rules": [
+      "No teal (#1B93A4) or purple (#9D4CDD) allowed.",
+      "Never use pure black or pure gray. Use slate (blue-tinted gray) for neutrality.",
+      "CTA buttons must use the primary brand blue, never gradients.",
+      "Use colors strictly for data status and hierarchy, not decoration."
+    ]
+  },
+  "layout_and_spacing": {
+    "strategy": "The 'Control Room' Grid",
+    "grid_system": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 or 12-column subgrid.",
+    "spacing_scale": "Tight and dense. Use gap-4 or gap-6 for dashboard widgets. Internal padding p-4 or p-6.",
+    "alignment": "Left-align all data labels, tabular content, and metric names. Only center specific icon-based states (empty states).",
+    "structure": "Sidebar navigation (w-64, hidden on mobile) + Top utility header (h-14) + Main content area."
+  },
+  "surfaces_and_borders": {
+    "style": "Grid Borders & Technical Look",
+    "cards": "Flat background (bg-white), 1px solid border (border-slate-200), max rounded-md (6px radius). NO heavy drop shadows. Hover states should feature a subtle -translate-y-[1px] and shadow-sm.",
+    "header": "Solid white background with border-b border-slate-200. Not glassmorphism since this is a dense clinical/B2B app.",
+    "sidebar": "bg-slate-50 border-r border-slate-200."
+  },
+  "components": {
+    "tables": "Shadcn Table. Highly dense. py-2 instead of py-4. Use IBM Plex Mono for numeric columns.",
+    "charts": "Recharts or Shadcn Charts. Must use the defined data_visualization colors. Use line charts for RTB bid simulator over time, bar charts for Lift vs Control, and compose charts for the Outcome-Adjusted Supply Score.",
+    "forms": "Shadcn Form elements. Square or slightly rounded (rounded-md). Input fields bg-white, border-slate-300.",
+    "tabs": "Shadcn Tabs. Prefer transparent background with bottom-border active states for a cleaner SaaS look rather than pill backgrounds.",
+    "badges": "Use highly legible badges for 'Supply Quality' or 'Vendor Status' (e.g., bg-emerald-100 text-emerald-800).",
+    "ai_insights": "For 'Claude Sonnet 4.5 powered narrative insights', use a dedicated card with a subtle indigo border or light indigo background (bg-indigo-50) and a distinct spark icon to separate AI narrative from raw data."
+  },
+  "motion_and_interaction": {
+    "hover": "Explicit hover states on all rows and buttons. transition-colors duration-200 ease-in-out.",
+    "loader": "Skeleton loaders for data widgets. No bouncy animations.",
+    "transitions": "Subtle opacity and transform for tab switching or modal opening."
+  },
+  "icons_and_assets": {
+    "library": "lucide-react",
+    "usage": "Use 18px or 20px icons with stroke-width 1.5 or 2. Consistent stroke weight is critical."
+  },
+  "images": {
+    "avatar_male": {
+      "url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDF8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMGF2YXRhcnxlbnwwfHx8fDE3ODEzMTI2OTF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Professional male avatar for user profile or account settings."
+    },
+    "avatar_female": {
+      "url": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDF8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMGF2YXRhcnxlbnwwfHx8fDE3ODEzMTI2OTF8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Professional female avatar for user profile or account settings."
+    },
+    "campaign_banner_placeholder": {
+      "url": "https://images.pexels.com/photos/8509795/pexels-photo-8509795.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "description": "Close-up of pills for the Campaign Builder preview module if a visual is needed."
+    }
+  },
+  "accessibility_and_testing": {
+    "testing_attributes": "All interactive elements, metric cards, and form inputs MUST include data-testid. E.g., data-testid='rtb-simulator-start', data-testid='supply-score-metric'.",
+    "contrast": "Ensure IBM Plex Sans text at text-sm meets minimum 4.5:1 ratio on bg-white or bg-slate-50. Mute tertiary text must not fall below 4.5:1."
+  },
+  "instructions_to_main_agent": {
+    "1": "Setup the exact typography using Google Fonts (Manrope, IBM Plex Sans, IBM Plex Mono). Override Tailwind's default sans and mono.",
+    "2": "Build a comprehensive layout wrapper: Sidebar Nav with multi-tab navigation to the specific modules (Campaign Overview, Audience Scorer, PMP Scorecard, RTB Simulator, etc.).",
+    "3": "Implement the 'Killer Feature': PMP / Supply Scorecard using Recharts to visualize the composite Outcome-Adjusted Supply Score.",
+    "4": "For the RTB simulator, use a real-time updating chart or a visually dense parameter tuning interface.",
+    "5": "Do NOT use placeholder image URLs like 'via.placeholder.com'. Only use the image URLs provided in this JSON.",
+    "6": "Integrate Shadcn primitives (Card, Table, Tabs, Input, Select, Button, Badge) and customize them to remove heavy shadows and large border radii. Make them look dense and clinical.",
+    "7": "Do not center layout contents; keep the dashboard grid left-aligned and structured."
+  }
+}
