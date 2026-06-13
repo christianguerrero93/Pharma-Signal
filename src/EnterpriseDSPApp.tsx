@@ -41,6 +41,14 @@ function pct(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+function friendlyError(err: unknown, fallback: string) {
+  const message = err instanceof Error ? err.message : String(err || fallback);
+  if (message.toLowerCase().includes('failed to fetch') || message.toLowerCase().includes('networkerror')) {
+    return `Cannot reach the Full DSP API at ${API_BASE}. Start the backend with: cd backend && uvicorn full_dsp_server:app --reload --port 8090. If this frontend is deployed, set VITE_FULL_DSP_API_URL to the hosted backend URL instead of localhost.`;
+  }
+  return message || fallback;
+}
+
 export default function EnterpriseDSPApp() {
   const [token, setToken] = useState(localStorage.getItem('pharma_signal_full_token') || '');
   const [user, setUser] = useState<User | null>(null);
@@ -96,7 +104,7 @@ export default function EnterpriseDSPApp() {
       }
       setError('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to load DSP workbench');
+      setError(friendlyError(err, 'Unable to load DSP workbench'));
     } finally {
       setBusy(false);
     }
@@ -123,7 +131,7 @@ export default function EnterpriseDSPApp() {
       setToken(data.access_token);
       setUser(data.user);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(friendlyError(err, 'Login failed'));
     } finally {
       setBusy(false);
     }
@@ -139,7 +147,7 @@ export default function EnterpriseDSPApp() {
       });
       await loadWorkbench();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Campaign build failed');
+      setError(friendlyError(err, 'Campaign build failed'));
     } finally {
       setBusy(false);
     }
@@ -153,7 +161,7 @@ export default function EnterpriseDSPApp() {
       await api(`/api/full/line-items/${selectedLineId}/bid-factors`, { method: 'PUT', body: JSON.stringify(bidFactors) });
       await loadWorkbench();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Bid factor update failed');
+      setError(friendlyError(err, 'Bid factor update failed'));
     } finally {
       setBusy(false);
     }
@@ -175,7 +183,7 @@ export default function EnterpriseDSPApp() {
       });
       await loadWorkbench();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Bulk edit failed');
+      setError(friendlyError(err, 'Bulk edit failed'));
     } finally {
       setBusy(false);
     }
@@ -209,7 +217,7 @@ export default function EnterpriseDSPApp() {
       setAuctionResult(result);
       await loadWorkbench();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Auction evaluation failed');
+      setError(friendlyError(err, 'Auction evaluation failed'));
     } finally {
       setBusy(false);
     }
@@ -230,7 +238,7 @@ export default function EnterpriseDSPApp() {
             <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
             <button className="primary-button" disabled={busy}><Lock size={16} /> Sign in</button>
           </form>
-          <small>Local dev users use `@pharmasignal.local`; set `FULL_DSP_DEV_PASSWORD` to change the seed password.</small>
+          <small>API: {API_BASE}. Local dev users use `@pharmasignal.local`; set `FULL_DSP_DEV_PASSWORD` to change the seed password.</small>
           {error && <div className="error-box">{error}</div>}
         </section>
       </main>
