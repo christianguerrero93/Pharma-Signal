@@ -1,8 +1,8 @@
 {
   "name": "pharma-signal",
   "private": false,
-  "version": "0.1.0",
-  "description": "Pharma-native DSP command center and measurement planning prototype.",
+  "version": "0.2.0",
+  "description": "Pharma-native DSP command center, bidder simulation, supply intelligence, and measurement planning prototype.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,5 +18,8 @@
     "react-dom": "latest",
     "lucide-react": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest"
+  }
 }
