@@ -97,7 +97,20 @@ jobs:
           overlap = client.post('/api/full/audiences/overlap', headers=headers, json={'audience_ids': [auds[0]['id'], auds[1]['id']]})
           assert overlap.status_code == 200 and overlap.json()['deduplicated_unique_reach'] > 0, overlap.text
 
-          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/reporting/performance', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results']:
+          rtb = client.post(f'/api/full/rtb/bid?line_item_id={line_id}', headers=headers, json={'id': 'ci-req', 'imp': [{'id': '1', 'bidfloor': 4.0, 'banner': {'w': 300, 'h': 250}}], 'device': {'geo': {'country': 'USA'}}, 'user': {'consent': True}})
+          assert rtb.status_code == 200, rtb.text
+          wid = rtb.json()['seatbid'][0]['bid'][0]['id']
+          assert client.get(f'/api/full/rtb/win?wid={wid}&price=6.5').status_code == 200
+          assert client.get(f'/api/full/rtb/billing?wid={wid}').status_code == 200
+
+          connectors = client.get('/api/full/connectors', headers=headers).json()
+          ssp = [x for x in connectors if x['kind'] == 'ssp'][0]
+          sync = client.post(f"/api/full/connectors/{ssp['id']}/sync?days=14", headers=headers)
+          assert sync.status_code == 200 and sync.json()['facts_ingested'] > 0, sync.text
+          rep = client.get('/api/full/reporting/performance?days=14', headers=headers)
+          assert rep.status_code == 200 and rep.json()['source'] == 'live', rep.text
+
+          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'
 

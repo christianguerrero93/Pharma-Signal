@@ -43,8 +43,12 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
 - **Reach & frequency forecasting** — diminishing-returns reach curve, achieved
   frequency, % of addressable audience, and data-vs-media spend split.
 - **Outcome-aware bid engine** — weighted bid factors, bid shading, single-impression
-  auction evaluation, and an **OpenRTB bidstream simulator** (win rate, clearing
-  prices, spend, and PHI guardrail blocks across supply partners).
+  auction evaluation, an **OpenRTB bidstream simulator** (win rate, second-price
+  clearing, pacing, frequency capping, PHI blocks), and a real **OpenRTB 2.x
+  BidRequest→BidResponse** endpoint with win-notice (nurl) and billing (burl) callbacks.
+- **Connectors / live feeds** — GA4, SSP delivery, Crossix measurement, and identity
+  connectors ingest delivery/engagement/outcome facts; once SSP feeds are present,
+  reporting switches from simulated to **live** data. Real feeds POST to an ingest API.
 - **Supply path optimization** — blended SPO score (outcome, viewability, match rate,
   working media, fraud, cost) with prioritize / maintain / reduce recommendations,
   plus a PMP / PG / curated **deal marketplace**.

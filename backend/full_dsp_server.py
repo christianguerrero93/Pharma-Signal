@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import bcrypt
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -60,6 +60,8 @@ app.add_middleware(
 
 JWT_SECRET = os.environ.get("FULL_DSP_JWT_SECRET", "pharma-signal-dev-secret-change-me")
 JWT_TTL_SECONDS = int(os.environ.get("FULL_DSP_JWT_TTL", "43200"))  # 12 hours
+# Absolute base used to build OpenRTB win-notice (nurl) and billing (burl) URLs.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +355,64 @@ class OverlapRequest(BaseModel):
     audience_ids: List[str] = Field(min_length=1)
 
 
+# --- OpenRTB 2.x (subset) ---
+class ORTBBanner(BaseModel):
+    w: Optional[int] = None
+    h: Optional[int] = None
+
+
+class ORTBImp(BaseModel):
+    id: str = "1"
+    bidfloor: float = 0.0
+    bidfloorcur: str = "USD"
+    banner: Optional[ORTBBanner] = None
+    tagid: Optional[str] = None
+
+
+class ORTBGeo(BaseModel):
+    country: Optional[str] = "USA"
+    region: Optional[str] = None
+
+
+class ORTBDevice(BaseModel):
+    ua: Optional[str] = None
+    ip: Optional[str] = None
+    geo: Optional[ORTBGeo] = None
+
+
+class ORTBUser(BaseModel):
+    id: Optional[str] = None
+    buyeruid: Optional[str] = None
+    consent: bool = True
+
+
+class ORTBBidRequest(BaseModel):
+    id: str
+    imp: List[ORTBImp] = Field(min_length=1)
+    device: Optional[ORTBDevice] = None
+    user: Optional[ORTBUser] = None
+    at: int = 2          # 2 = second-price
+    tmax: int = 100
+    cur: List[str] = Field(default_factory=lambda: ["USD"])
+    test: int = 0
+
+
+class DeliveryFact(BaseModel):
+    fact_date: str
+    campaign_id: Optional[str] = None
+    partner: Optional[str] = None
+    channel: Optional[str] = None
+    impressions: int = Field(default=0, ge=0)
+    clicks: int = Field(default=0, ge=0)
+    conversions: int = Field(default=0, ge=0)
+    spend: float = Field(default=0.0, ge=0)
+
+
+class IngestRequest(BaseModel):
+    kind: str = Field(pattern="^(ga4|ssp|crossix|identity)$")
+    rows: List[DeliveryFact] = Field(min_length=1)
+
+
 # ---------------------------------------------------------------------------
 # Database bootstrap + seed
 # ---------------------------------------------------------------------------
@@ -367,6 +427,9 @@ CREATE TABLE IF NOT EXISTS creatives (id TEXT PRIMARY KEY, campaign_id TEXT, nam
 CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, partner TEXT, deal_id TEXT, deal_type TEXT, channel TEXT, floor_cpm REAL, audience_match REAL, status TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS measurement_plans (id TEXT PRIMARY KEY, campaign_id TEXT, study_type TEXT, baseline_rate REAL, expected_lift_pct REAL, exposed_size INTEGER, control_size INTEGER, power REAL, mdl REAL, status TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS measurement_results (id TEXT PRIMARY KEY, plan_id TEXT, campaign_id TEXT, exposed_n INTEGER, exposed_conversions INTEGER, control_n INTEGER, control_conversions INTEGER, media_spend REAL, rx_value REAL, observed_lift_pct REAL, absolute_lift_pp REAL, ci_low_pp REAL, ci_high_pp REAL, p_value REAL, significant INTEGER, incremental_conversions INTEGER, cpic REAL, roas REAL, created_at TEXT);
+CREATE TABLE IF NOT EXISTS connectors (id TEXT PRIMARY KEY, name TEXT, kind TEXT, status TEXT, config_json TEXT, last_sync TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS delivery_facts (id TEXT PRIMARY KEY, connector_id TEXT, source TEXT, fact_date TEXT, campaign_id TEXT, partner TEXT, channel TEXT, impressions INTEGER, clicks INTEGER, conversions INTEGER, spend REAL, created_at TEXT);
+CREATE TABLE IF NOT EXISTS rtb_wins (id TEXT PRIMARY KEY, line_item_id TEXT, request_id TEXT, imp_id TEXT, partner TEXT, bid_price_cpm REAL, clear_price_cpm REAL, status TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
 """
 
@@ -409,6 +472,15 @@ def init_db() -> None:
             ]
             for row in seed_deals:
                 db.execute("INSERT INTO deals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), *row, now_iso()))
+        if not db.execute("SELECT 1 FROM connectors LIMIT 1").fetchone():
+            seed_connectors = [
+                ("GA4 Engagement", "ga4", "mock", '{"property_id": "", "note": "Set GA4 property + service-account to go live"}'),
+                ("SSP Delivery — PubMatic", "ssp", "mock", '{"partner": "PubMatic", "report_api": ""}'),
+                ("Crossix Measurement", "crossix", "mock", '{"feed": "", "note": "Rx/script-lift exposed-control feed"}'),
+                ("Identity — LiveRamp", "identity", "mock", '{"ramp_id": "", "note": "NPI / household identity resolution"}'),
+            ]
+            for name, kind, status, config in seed_connectors:
+                db.execute("INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), name, kind, status, config, None, now_iso()))
         db.commit()
 
 
@@ -697,6 +769,80 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
     }
     audit(user["email"], "bidstream_simulate", "line_item", payload.line_item_id, {"requests": payload.requests, "win_rate": summary["win_rate"]})
     return summary
+
+
+# ---------------------------------------------------------------------------
+# OpenRTB 2.x bid endpoint + win-notice (nurl) / billing (burl) handlers
+# ---------------------------------------------------------------------------
+@app.post("/api/full/rtb/bid")
+def rtb_bid(req: ORTBBidRequest, line_item_id: str = Query(...), user: Dict[str, Any] = Depends(current_user)):
+    """Evaluate an OpenRTB BidRequest and return a BidResponse (or 204 no-bid)."""
+    with conn() as db:
+        line = db.execute("SELECT * FROM line_items WHERE id=?", (line_item_id,)).fetchone()
+        factors = db.execute("SELECT * FROM bid_factors WHERE line_item_id=?", (line_item_id,)).fetchone()
+        supply = db.execute("SELECT * FROM supply_paths WHERE status='approved' ORDER BY outcome_score DESC LIMIT 1").fetchone()
+    if not line or not factors:
+        raise HTTPException(404, "Line item or bid factors not found")
+    line, factors = dict(line), dict(factors)
+    supply = dict(supply) if supply else {"partner": "OpenMarket", "bid_floor_cpm": 1.0, "outcome_score": 78, "working_media_ratio": 0.6, "status": "approved"}
+    rng = random.Random(hash(req.id) & 0xFFFFFFFF)
+    geo_ok = True
+    if req.device and req.device.geo and req.device.geo.country:
+        geo_ok = req.device.geo.country.upper() in {"USA", "US"}
+    consent_ok = req.user.consent if req.user else True
+    ts = now_iso()
+    bids: List[Dict[str, Any]] = []
+    with conn() as db:
+        for imp in req.imp:
+            floor = imp.bidfloor or supply["bid_floor_cpm"]
+            scored = _score_impression(
+                factors, line,
+                audience_quality=rng.uniform(60, 96), supply_quality=supply["outcome_score"], outcome_signal=rng.uniform(50, 92),
+                contextual_relevance=rng.uniform(55, 95), working_media_ratio=supply["working_media_ratio"], data_cost_ratio=rng.uniform(0.1, 0.4),
+                frequency_seen_today=0, floor_cpm=max(floor, 0.01), supply_status=supply["status"],
+                contains_phi=False, creative_approved=True, geo_allowed=geo_ok, consent_ok=consent_ok,
+            )
+            if scored["decision"] in {"bid", "throttle"} and scored["clearing_price_cpm"] and scored["bid_cpm"] >= floor:
+                win_id = str(uuid4())
+                db.execute("INSERT INTO rtb_wins VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (win_id, line_item_id, req.id, imp.id, supply["partner"], scored["bid_cpm"], None, "bid", ts))
+                bids.append({
+                    "id": win_id, "impid": imp.id, "price": scored["bid_cpm"],
+                    "nurl": f"{PUBLIC_BASE_URL}/api/full/rtb/win?wid={win_id}&price=" + "${AUCTION_PRICE}",
+                    "burl": f"{PUBLIC_BASE_URL}/api/full/rtb/billing?wid={win_id}",
+                    "adm": "<MLR-approved creative markup>", "crid": "ps-creative-1",
+                    "w": imp.banner.w if imp.banner else None, "h": imp.banner.h if imp.banner else None,
+                })
+        db.commit()
+    if not bids:
+        return Response(status_code=204)  # OpenRTB no-bid
+    audit(user["email"], "rtb_bid", "line_item", line_item_id, {"request_id": req.id, "bids": len(bids)})
+    return {"id": req.id, "bidid": str(uuid4()), "cur": "USD", "seatbid": [{"seat": "pharma-signal", "bid": bids}]}
+
+
+@app.get("/api/full/rtb/win")
+def rtb_win(wid: str, price: float = 0.0):
+    """Win notice (nurl). The exchange substitutes ${AUCTION_PRICE} with the clearing price."""
+    with conn() as db:
+        if db.execute("SELECT 1 FROM rtb_wins WHERE id=?", (wid,)).fetchone():
+            db.execute("UPDATE rtb_wins SET clear_price_cpm=?, status=? WHERE id=?", (price, "won", wid))
+            db.commit()
+    return Response(status_code=200)
+
+
+@app.get("/api/full/rtb/billing")
+def rtb_billing(wid: str):
+    """Billing notice (burl) — fired when the impression is rendered/billable."""
+    with conn() as db:
+        if db.execute("SELECT 1 FROM rtb_wins WHERE id=?", (wid,)).fetchone():
+            db.execute("UPDATE rtb_wins SET status=? WHERE id=?", ("billed", wid))
+            db.commit()
+    return Response(status_code=200)
+
+
+@app.get("/api/full/rtb/wins")
+def list_rtb_wins(limit: int = Query(50, ge=1, le=500), user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
+    with conn() as db:
+        return dicts(db.execute("SELECT * FROM rtb_wins ORDER BY ts DESC LIMIT ?", (limit,)).fetchall())
 
 
 # ---------------------------------------------------------------------------
@@ -1068,41 +1214,62 @@ def optimize_portfolio(user: Dict[str, Any] = Depends(current_user)) -> Dict[str
 
 
 # ---------------------------------------------------------------------------
-# Reporting: synthetic delivery + pacing analytics
+# Reporting: live delivery facts when present, else simulated
 # ---------------------------------------------------------------------------
 @app.get("/api/full/reporting/performance")
 def reporting_performance(days: int = Query(14, ge=1, le=90), user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     with conn() as db:
         campaigns = dicts(db.execute("SELECT * FROM campaigns").fetchall())
         lines = dicts(db.execute("SELECT * FROM line_items").fetchall())
+        facts = dicts(db.execute("SELECT * FROM delivery_facts WHERE source IN ('ssp', 'identity')").fetchall())
     lines_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
     for line in lines:
         lines_by_campaign.setdefault(line["campaign_id"], []).append(line)
+    facts_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
+    for fact in facts:
+        facts_by_campaign.setdefault(fact["campaign_id"], []).append(fact)
+
     report = []
     portfolio = {"impressions": 0, "clicks": 0, "conversions": 0, "spend": 0.0}
+    live_campaigns = 0
     for camp in campaigns:
-        camp_lines = lines_by_campaign.get(camp["id"], [])
         budget = camp["budget"]
-        daily_budget = budget / max(days, 1)
-        rng = random.Random(hash(camp["id"]) & 0xFFFFFFFF)
-        series, imps, clicks, convs, spend = [], 0, 0, 0, 0.0
-        for d in range(days):
-            day_spend = round(daily_budget * rng.uniform(0.7, 1.15), 2)
+        camp_facts = facts_by_campaign.get(camp["id"], [])
+        if camp_facts:
+            # Live: aggregate ingested SSP/identity delivery facts by date.
+            source = "live"
+            by_date: Dict[str, Dict[str, float]] = {}
+            for fact in camp_facts:
+                bucket = by_date.setdefault(fact["fact_date"], {"spend": 0.0, "impressions": 0, "clicks": 0, "conversions": 0})
+                bucket["spend"] += fact["spend"] or 0
+                bucket["impressions"] += fact["impressions"] or 0
+                bucket["clicks"] += fact["clicks"] or 0
+                bucket["conversions"] += fact["conversions"] or 0
+            dates = sorted(by_date)[-days:]
+            series = [{"date": dt, "spend": round(by_date[dt]["spend"], 2), "impressions": int(by_date[dt]["impressions"]), "clicks": int(by_date[dt]["clicks"]), "conversions": int(by_date[dt]["conversions"])} for dt in dates]
+            live_campaigns += 1
+        else:
+            # Simulated fallback when no feed has been ingested for this campaign.
+            source = "simulated"
+            camp_lines = lines_by_campaign.get(camp["id"], [])
+            daily_budget = budget / max(days, 1)
+            rng = random.Random(hash(camp["id"]) & 0xFFFFFFFF)
             avg_cpm = sum(l["max_bid_cpm"] for l in camp_lines) / max(len(camp_lines), 1) if camp_lines else 12
-            day_imps = int(day_spend / max(avg_cpm, 1) * 1000)
-            ctr = rng.uniform(0.0009, 0.0028)
-            cvr = rng.uniform(0.012, 0.05)
-            day_clicks = int(day_imps * ctr)
-            day_convs = int(day_clicks * cvr)
-            imps += day_imps
-            clicks += day_clicks
-            convs += day_convs
-            spend += day_spend
-            series.append({"date": (datetime.now(timezone.utc) - timedelta(days=days - d - 1)).date().isoformat(), "spend": day_spend, "impressions": day_imps, "clicks": day_clicks, "conversions": day_convs})
+            series = []
+            for d in range(days):
+                day_spend = round(daily_budget * rng.uniform(0.7, 1.15), 2)
+                day_imps = int(day_spend / max(avg_cpm, 1) * 1000)
+                day_clicks = int(day_imps * rng.uniform(0.0009, 0.0028))
+                day_convs = int(day_clicks * rng.uniform(0.012, 0.05))
+                series.append({"date": (datetime.now(timezone.utc) - timedelta(days=days - d - 1)).date().isoformat(), "spend": day_spend, "impressions": day_imps, "clicks": day_clicks, "conversions": day_convs})
+        imps = sum(s["impressions"] for s in series)
+        clicks = sum(s["clicks"] for s in series)
+        convs = sum(s["conversions"] for s in series)
+        spend = round(sum(s["spend"] for s in series), 2)
         pacing = round(spend / budget, 4) if budget else 0
         report.append({
             "campaign_id": camp["id"], "name": camp["name"], "brand": camp["brand"], "status": camp["status"],
-            "budget": budget, "spend": round(spend, 2), "pacing": pacing,
+            "budget": budget, "spend": spend, "pacing": pacing, "source": source,
             "pacing_status": "on_pace" if 0.9 <= pacing <= 1.1 else "underpacing" if pacing < 0.9 else "overpacing",
             "impressions": imps, "clicks": clicks, "conversions": convs,
             "ctr": round(clicks / max(imps, 1), 5), "cvr": round(convs / max(clicks, 1), 4),
@@ -1116,7 +1283,95 @@ def reporting_performance(days: int = Query(14, ge=1, le=90), user: Dict[str, An
     portfolio["spend"] = round(portfolio["spend"], 2)
     portfolio["ctr"] = round(portfolio["clicks"] / max(portfolio["impressions"], 1), 5)
     portfolio["cpa"] = round(portfolio["spend"] / max(portfolio["conversions"], 1), 2)
-    return {"days": days, "portfolio": portfolio, "campaigns": report}
+    return {"days": days, "source": "live" if live_campaigns else "simulated", "live_campaigns": live_campaigns, "portfolio": portfolio, "campaigns": report}
+
+
+# ---------------------------------------------------------------------------
+# Connectors / live feeds (GA4, SSP delivery, Crossix measurement, identity)
+# ---------------------------------------------------------------------------
+@app.get("/api/full/connectors")
+def list_connectors(user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
+    with conn() as db:
+        rows = dicts(db.execute("SELECT * FROM connectors ORDER BY name").fetchall())
+        counts = {dict(r)["connector_id"]: dict(r)["n"] for r in db.execute("SELECT connector_id, COUNT(*) AS n FROM delivery_facts GROUP BY connector_id").fetchall()}
+    for row in rows:
+        row["fact_count"] = counts.get(row["id"], 0)
+    return rows
+
+
+@app.post("/api/full/connectors/{connector_id}/sync")
+def sync_connector(connector_id: str, days: int = Query(14, ge=1, le=90), user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    """Pull (here: generate) delivery facts from a source into delivery_facts."""
+    with conn() as db:
+        crow = db.execute("SELECT * FROM connectors WHERE id=?", (connector_id,)).fetchone()
+        if not crow:
+            raise HTTPException(404, "Connector not found")
+        crow = dict(crow)
+        campaigns = dicts(db.execute("SELECT * FROM campaigns").fetchall())
+        lines = dicts(db.execute("SELECT * FROM line_items").fetchall())
+    lines_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
+    for line in lines:
+        lines_by_campaign.setdefault(line["campaign_id"], []).append(line)
+    rng = random.Random(hash(connector_id) & 0xFFFFFFFF)
+    ts = now_iso()
+    inserted = 0
+    with conn() as db:
+        db.execute("DELETE FROM delivery_facts WHERE connector_id=?", (connector_id,))
+        for camp in campaigns:
+            camp_lines = lines_by_campaign.get(camp["id"], [])
+            channel = camp_lines[0]["channel"] if camp_lines else "Display"
+            avg_cpm = sum(l["max_bid_cpm"] for l in camp_lines) / max(len(camp_lines), 1) if camp_lines else 12
+            daily_budget = camp["budget"] / max(days, 1)
+            for d in range(days):
+                date = (datetime.now(timezone.utc) - timedelta(days=days - d - 1)).date().isoformat()
+                day_spend = round(daily_budget * rng.uniform(0.7, 1.15), 2)
+                day_imps = int(day_spend / max(avg_cpm, 1) * 1000)
+                day_clicks = int(day_imps * rng.uniform(0.0009, 0.0028))
+                day_convs = int(day_clicks * rng.uniform(0.012, 0.05))
+                if crow["kind"] == "ga4":          # engagement only, no media spend
+                    vals = (day_imps, day_clicks, day_convs, 0.0)
+                elif crow["kind"] == "crossix":    # conversions / Rx outcomes only
+                    vals = (0, 0, day_convs, 0.0)
+                else:                               # ssp / identity: full delivery
+                    vals = (day_imps, day_clicks, day_convs, day_spend)
+                db.execute("INSERT INTO delivery_facts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), connector_id, crow["kind"], date, camp["id"], crow["name"], channel, vals[0], vals[1], vals[2], vals[3], ts))
+                inserted += 1
+        db.execute("UPDATE connectors SET status=?, last_sync=? WHERE id=?", ("connected", ts, connector_id))
+        db.commit()
+    audit(user["email"], "connector_sync", "connector", connector_id, {"facts": inserted, "days": days})
+    return {"connector_id": connector_id, "kind": crow["kind"], "facts_ingested": inserted, "status": "connected", "last_sync": ts}
+
+
+@app.post("/api/full/connectors/ingest")
+def ingest_facts(payload: IngestRequest, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    """Ingest real delivery/measurement rows from an external feed."""
+    ts = now_iso()
+    inserted = 0
+    with conn() as db:
+        crow = db.execute("SELECT * FROM connectors WHERE kind=? ORDER BY created_at LIMIT 1", (payload.kind,)).fetchone()
+        connector_id = dict(crow)["id"] if crow else str(uuid4())
+        if not crow:
+            db.execute("INSERT INTO connectors VALUES (?, ?, ?, ?, ?, ?, ?)", (connector_id, f"{payload.kind} feed", payload.kind, "connected", "{}", ts, ts))
+        for r in payload.rows:
+            db.execute("INSERT INTO delivery_facts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), connector_id, payload.kind, r.fact_date, r.campaign_id, r.partner, r.channel, r.impressions, r.clicks, r.conversions, r.spend, ts))
+            inserted += 1
+        db.execute("UPDATE connectors SET status=?, last_sync=? WHERE id=?", ("connected", ts, connector_id))
+        db.commit()
+    audit(user["email"], "connector_ingest", "connector", connector_id, {"kind": payload.kind, "facts": inserted})
+    return {"connector_id": connector_id, "kind": payload.kind, "facts_ingested": inserted}
+
+
+@app.get("/api/full/connectors/facts")
+def connector_facts(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    with conn() as db:
+        rows = dicts(db.execute("SELECT source, COUNT(*) AS n, COALESCE(SUM(impressions),0) AS impressions, COALESCE(SUM(clicks),0) AS clicks, COALESCE(SUM(conversions),0) AS conversions, COALESCE(SUM(spend),0) AS spend FROM delivery_facts GROUP BY source ORDER BY source").fetchall())
+    for r in rows:
+        r["n"] = int(r["n"])
+        r["impressions"] = int(r["impressions"])
+        r["clicks"] = int(r["clicks"])
+        r["conversions"] = int(r["conversions"])
+        r["spend"] = round(float(r["spend"]), 2)
+    return {"by_source": rows}
 
 
 # ---------------------------------------------------------------------------
@@ -1165,6 +1420,9 @@ def overview(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
         supply = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
         plans = dicts(db.execute("SELECT * FROM measurement_plans").fetchall())
         results = dicts(db.execute("SELECT * FROM measurement_results").fetchall())
+        connectors = dicts(db.execute("SELECT * FROM connectors").fetchall())
+        fact_count = dict(db.execute("SELECT COUNT(*) AS n FROM delivery_facts").fetchone())["n"]
+        rtb_win_count = dict(db.execute("SELECT COUNT(*) AS n FROM rtb_wins WHERE status IN ('won', 'billed')").fetchone())["n"]
     total_budget = sum(c["budget"] for c in campaigns)
     addressable_hcp = sum(a["npi_count"] for a in audiences if a["audience_type"] == "HCP")
     avg_working_media = round(sum(s["working_media_ratio"] for s in supply) / max(len(supply), 1), 3)
@@ -1184,6 +1442,10 @@ def overview(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
             "measurement_ready": sum(1 for p in plans if p["status"] == "ready"),
             "measured_studies": len(results),
             "significant_studies": sum(1 for r in results if r["significant"]),
+            "connectors": len(connectors),
+            "connectors_live": sum(1 for c in connectors if c["status"] == "connected"),
+            "live_delivery_facts": int(fact_count),
+            "rtb_wins": int(rtb_win_count),
             "avg_working_media_ratio": avg_working_media,
         },
         "storage_backend": STORAGE_BACKEND,

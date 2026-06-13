@@ -1,13 +1,14 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, BadgeCheck, Boxes, ClipboardList, Gauge, LayoutDashboard, Lock, PencilRuler,
+  Activity, BadgeCheck, Boxes, ClipboardList, Gauge, LayoutDashboard, Lock, PencilRuler, Plug,
   RefreshCw, Radio, ShieldCheck, SlidersHorizontal, Target, TrendingUp, Users, Zap,
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
-  Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Compliance, Creative, Deal, Forecast,
-  FrequencyGovernance, MeasurementPlan, MeasurementResultDetail, Optimizer, Overview, RankedSupply, Reporting,
-  StoredResult, SupplyOptimize, SupplyPath, User, Workbench,
+  Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Compliance, Connector, ConnectorFacts,
+  Creative, Deal, Forecast, FrequencyGovernance, MeasurementPlan, MeasurementResultDetail, Optimizer,
+  Overview, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
+  User, Workbench,
 } from './api/fullDspClient';
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,7 @@ const starterBidFactors: BidFactors = {
 
 type TabKey =
   | 'overview' | 'campaigns' | 'audiences' | 'creative' | 'supply'
-  | 'bidder' | 'measurement' | 'optimization' | 'reporting' | 'compliance' | 'audit';
+  | 'bidder' | 'measurement' | 'optimization' | 'reporting' | 'connectors' | 'compliance' | 'audit';
 
 const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
   { key: 'overview', label: 'Overview', icon: <LayoutDashboard size={16} /> },
@@ -39,6 +40,7 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
   { key: 'measurement', label: 'Measurement', icon: <Target size={16} /> },
   { key: 'optimization', label: 'Optimization', icon: <TrendingUp size={16} /> },
   { key: 'reporting', label: 'Reporting', icon: <Gauge size={16} /> },
+  { key: 'connectors', label: 'Connectors', icon: <Plug size={16} /> },
   { key: 'compliance', label: 'Compliance', icon: <ShieldCheck size={16} /> },
   { key: 'audit', label: 'Audit', icon: <Activity size={16} /> },
 ];
@@ -171,6 +173,7 @@ export default function EnterpriseDSPApp() {
       {tab === 'measurement' && <MeasurementTab client={client} workbench={workbench} setError={setError} />}
       {tab === 'optimization' && <OptimizationTab client={client} setError={setError} />}
       {tab === 'reporting' && <ReportingTab client={client} setError={setError} />}
+      {tab === 'connectors' && <ConnectorsTab client={client} setError={setError} />}
       {tab === 'compliance' && <ComplianceTab client={client} setError={setError} />}
       {tab === 'audit' && <AuditTab workbench={workbench} />}
     </main>
@@ -202,6 +205,10 @@ function OverviewTab({ overview, workbench, client }: { overview: Overview | nul
     { label: 'PMP / deals', value: num(k.deals ?? 0) },
     { label: 'Supply paths', value: num(k.supply_paths ?? 0) },
     { label: 'Measurement ready', value: `${k.measurement_ready ?? 0}/${k.measurement_plans ?? 0}` },
+    { label: 'Measured / significant', value: `${k.measured_studies ?? 0}/${k.significant_studies ?? 0}` },
+    { label: 'Live connectors', value: `${k.connectors_live ?? 0}/${k.connectors ?? 0}` },
+    { label: 'Delivery facts', value: num(k.live_delivery_facts ?? 0) },
+    { label: 'RTB wins', value: num(k.rtb_wins ?? 0) },
     { label: 'Avg working media', value: pct(k.avg_working_media_ratio ?? 0) },
   ];
 
@@ -637,6 +644,8 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
   const [auctionResult, setAuctionResult] = useState<Record<string, unknown> | null>(null);
   const [sim, setSim] = useState<Bidstream | null>(null);
   const [simForm, setSimForm] = useState({ requests: 2000, phi_leak_rate: 0.03 });
+  const [rtb, setRtb] = useState<RtbBidResponse | 'nobid' | null>(null);
+  const [rtbForm, setRtbForm] = useState({ bidfloor: 6, country: 'USA', consent: true });
 
   useEffect(() => {
     if (!selectedLineId && allLines[0]) {
@@ -669,6 +678,18 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
     if (!selectedLineId) return;
     setBusy(true);
     try { setSim(await client.post<Bidstream>('/api/full/bidstream/simulate', { line_item_id: selectedLineId, requests: simForm.requests, phi_leak_rate: simForm.phi_leak_rate, seed: 42 })); } catch (e) { setError(friendlyError(e, 'Bidstream simulation failed')); } finally { setBusy(false); }
+  }
+  async function runRtb() {
+    if (!selectedLineId) return;
+    setBusy(true);
+    setRtb(null);
+    try {
+      const body = { id: `req-${Date.now()}`, imp: [{ id: '1', bidfloor: rtbForm.bidfloor, banner: { w: 300, h: 250 } }], device: { geo: { country: rtbForm.country } }, user: { consent: rtbForm.consent } };
+      const resp = await fetch(`${API_BASE}/api/full/rtb/bid?line_item_id=${selectedLineId}`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('pharma_signal_full_token')}` }, body: JSON.stringify(body) });
+      if (resp.status === 204) { setRtb('nobid'); return; }
+      if (!resp.ok) throw new Error(await resp.text());
+      setRtb(await resp.json() as RtbBidResponse);
+    } catch (e) { setError(friendlyError(e, 'OpenRTB bid failed')); } finally { setBusy(false); }
   }
 
   return (
@@ -721,6 +742,23 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
             </div>
           </>
         ) : <p>Select a line item and run the simulator to see win rate, clearing prices, spend, and PHI guardrail blocks across supply partners.</p>}
+      </Panel>
+
+      <Panel eyebrow="OpenRTB 2.x" title="Live BidRequest → BidResponse" icon={<Radio />}
+        actions={<div className="inline-form"><label>Bid floor<input type="number" value={rtbForm.bidfloor} onChange={(e) => setRtbForm({ ...rtbForm, bidfloor: Number(e.target.value) })} /></label><label>Geo<input value={rtbForm.country} onChange={(e) => setRtbForm({ ...rtbForm, country: e.target.value })} /></label><label className="check-row"><input type="checkbox" checked={rtbForm.consent} onChange={(e) => setRtbForm({ ...rtbForm, consent: e.target.checked })} /> consent</label><button type="button" className="primary-button" disabled={busy || !selectedLineId} onClick={runRtb}>Send bid request</button></div>}>
+        <p>Posts a real OpenRTB BidRequest to the bidder. Non-USA geo or missing consent returns a 204 no-bid; a win returns a BidResponse with second-price, win-notice (nurl) and billing (burl) URLs.</p>
+        {rtb === 'nobid' && <div className="error-box">204 No-Bid — the request was filtered by geo/consent/floor guardrails.</div>}
+        {rtb && rtb !== 'nobid' && (
+          <>
+            <div className="metric-grid">
+              <div className="metric-card"><span>Seat</span><strong>{rtb.seatbid[0]?.seat}</strong></div>
+              <div className="metric-card"><span>Bid price CPM</span><strong className="ok">{money2(rtb.seatbid[0]?.bid[0]?.price || 0)}</strong></div>
+              <div className="metric-card"><span>Creative</span><strong>{rtb.seatbid[0]?.bid[0]?.crid}</strong></div>
+              <div className="metric-card"><span>Size</span><strong>{rtb.seatbid[0]?.bid[0]?.w}×{rtb.seatbid[0]?.bid[0]?.h}</strong></div>
+            </div>
+            <pre className="result-box">{JSON.stringify(rtb, null, 2)}</pre>
+          </>
+        )}
       </Panel>
     </>
   );
@@ -911,7 +949,7 @@ function ReportingTab({ client, setError }: TabProps) {
   return (
     <>
       <Panel eyebrow="Delivery & outcomes" title="Portfolio performance" icon={<Gauge />}
-        actions={<label className="inline-label">Window<select value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7, 14, 30, 60, 90].map((d) => <option key={d} value={d}>{d}d</option>)}</select></label>}>
+        actions={<div className="inline-form">{report && <Badge tone={report.source === 'live' ? 'ok' : 'muted'}>{report.source} data{report.live_campaigns ? ` · ${report.live_campaigns} live` : ''}</Badge>}<label className="inline-label">Window<select value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7, 14, 30, 60, 90].map((d) => <option key={d} value={d}>{d}d</option>)}</select></label></div>}>
         <div className="metric-grid">
           <div className="metric-card"><span>Spend</span><strong>{money(p?.spend || 0)}</strong></div>
           <div className="metric-card"><span>Impressions</span><strong>{num(p?.impressions || 0)}</strong></div>
@@ -925,7 +963,7 @@ function ReportingTab({ client, setError }: TabProps) {
       {report?.campaigns.map((c) => {
         const maxSpend = Math.max(...c.series.map((s) => s.spend), 1);
         return (
-          <Panel key={c.campaign_id} eyebrow={c.brand} title={c.name} icon={<Badge tone={c.pacing_status === 'on_pace' ? 'ok' : 'warn'}>{c.pacing_status.replaceAll('_', ' ')}</Badge>}>
+          <Panel key={c.campaign_id} eyebrow={`${c.brand} · ${c.source}`} title={c.name} icon={<Badge tone={c.pacing_status === 'on_pace' ? 'ok' : 'warn'}>{c.pacing_status.replaceAll('_', ' ')}</Badge>}>
             <div className="metric-grid">
               <div className="metric-card"><span>Spend / budget</span><strong>{money(c.spend)} / {money(c.budget)}</strong></div>
               <div className="metric-card"><span>Pacing</span><strong>{pct(c.pacing)}</strong></div>
@@ -940,6 +978,53 @@ function ReportingTab({ client, setError }: TabProps) {
           </Panel>
         );
       })}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Connectors / live feeds
+// ---------------------------------------------------------------------------
+function ConnectorsTab({ client, setError }: TabProps) {
+  const [connectors, setConnectors] = useState<Connector[]>([]);
+  const [facts, setFacts] = useState<ConnectorFacts | null>(null);
+  const [busy, setBusy] = useState('');
+  const load = useCallback(() => {
+    client.get<Connector[]>('/api/full/connectors').then(setConnectors).catch((e) => setError(friendlyError(e, 'Load connectors failed')));
+    client.get<ConnectorFacts>('/api/full/connectors/facts').then(setFacts).catch(() => {});
+  }, [client, setError]);
+  useEffect(() => { load(); }, [load]);
+
+  async function sync(id: string) {
+    setBusy(id);
+    try { await client.post(`/api/full/connectors/${id}/sync?days=14`, {}); load(); } catch (e) { setError(friendlyError(e, 'Sync failed')); } finally { setBusy(''); }
+  }
+
+  return (
+    <>
+      <Panel eyebrow="Live feeds" title="Data connectors" icon={<Plug />} actions={<button className="secondary-button" onClick={load}><RefreshCw size={16} /> Refresh</button>}>
+        <p>Sync pulls delivery / engagement / outcome facts into the warehouse. SSP &amp; identity facts replace simulated data in Reporting; real feeds can POST rows to <code>/api/full/connectors/ingest</code>.</p>
+        <div className="data-table">
+          {connectors.map((cn) => (
+            <div className="connector-row" key={cn.id}>
+              <div><strong>{cn.name}</strong><small>{cn.kind} · {num(cn.fact_count)} facts{cn.last_sync ? ` · synced ${new Date(cn.last_sync).toLocaleString()}` : ''}</small></div>
+              <Badge tone={cn.status === 'connected' ? 'ok' : 'muted'}>{cn.status}</Badge>
+              <button type="button" className="mini ok" disabled={busy === cn.id} onClick={() => sync(cn.id)}>{busy === cn.id ? 'Syncing…' : 'Sync'}</button>
+            </div>
+          ))}
+          {!connectors.length && <p>No connectors configured.</p>}
+        </div>
+      </Panel>
+
+      <Panel eyebrow="Warehouse" title="Ingested facts by source" icon={<Gauge />}>
+        <div className="data-table">
+          <div className="data-head fact-cols"><span>Source</span><span>Rows</span><span>Impressions</span><span>Clicks</span><span>Conversions</span><span>Spend</span></div>
+          {facts?.by_source.map((f) => (
+            <div className="data-row fact-cols" key={f.source}><strong>{f.source}</strong><span>{num(f.n)}</span><span>{num(f.impressions)}</span><span>{num(f.clicks)}</span><span>{num(f.conversions)}</span><span>{money(f.spend)}</span></div>
+          ))}
+          {!facts?.by_source.length && <p>No facts ingested yet — sync a connector above.</p>}
+        </div>
+      </Panel>
     </>
   );
 }
