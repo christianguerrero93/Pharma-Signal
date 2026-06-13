@@ -9,9 +9,11 @@ It is not positioned as a generic DSP clone. The product direction is to connect
 - Supply path quality across SSPs, curated PMPs, CTV, endemic health, and open web
 - Data-cost visibility and working-media efficiency
 - Outcome-aware bid logic
+- OpenRTB-style auction decisioning
+- Portfolio budget optimization
 - GA4 and downstream engagement signals
 - Rx / script-lift style measurement planning
-- Compliance, audit, and no-PHI guardrails
+- Compliance, audit, approvals, and no-PHI guardrails
 
 ## What is included now
 
@@ -24,9 +26,12 @@ This repository contains a Netlify-ready React + Vite application with a typed D
 - Supply partner scorecard for PubMatic, Magnite, OpenX, Index Exchange, and endemic health supply
 - Audience activation model for HCP, DTC, retargeting, and contextual signals
 - Bid-decision simulator with bid / throttle / reject logic
+- OpenRTB pharma auction gateway with compliance checks before pricing
+- Portfolio budget optimizer with increase / hold / decrease recommendations
 - Pacing intelligence by campaign
 - Measurement-power planner with expected conversions, exposed/control sizing, and minimum detectable lift
 - Partner integration module
+- Control-plane approvals and audit stream
 - Compliance-control module
 - Architecture and roadmap sections
 
@@ -34,7 +39,11 @@ This repository contains a Netlify-ready React + Vite application with a typed D
 
 - `src/types.ts` — DSP domain types
 - `src/data/dsp.ts` — modeled campaign, audience, supply, pacing, compliance, and integration data
+- `src/data/openRtbSamples.ts` — sample pharma OpenRTB auction requests
 - `src/lib/dspEngine.ts` — supply scoring, working-media ratio, bid decisioning, pacing, and measurement logic
+- `src/lib/openRtb.ts` — pharma-safe OpenRTB auction simulator and bid response builder
+- `src/lib/budgetOptimizer.ts` — portfolio budget recommendation engine
+- `src/lib/controlPlane.ts` — approval and audit-trail logic
 - `src/connectors/partnerAdapters.ts` — mocked GA4, SSP delivery, and outcome-measurement connectors
 - `docs/dsp-architecture.md` — production architecture blueprint
 - `docs/integration-roadmap.md` — phased build roadmap
