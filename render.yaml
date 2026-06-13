@@ -1,0 +1,22 @@
+# Render.com blueprint for the Pharma Signal Full DSP backend.
+# Deploy: push to GitHub, then in Render "New > Blueprint" and pick this repo.
+# Works the same on Railway/Fly with their Docker support (they read backend/Dockerfile).
+services:
+  - type: web
+    name: pharma-signal-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /health
+    plan: free
+    envVars:
+      # Seed login password for the dev users. Set a real value in the dashboard.
+      - key: FULL_DSP_DEV_PASSWORD
+        sync: false
+      # SQLite lives on the mounted disk so campaigns/audiences survive redeploys.
+      - key: FULL_DSP_DB
+        value: /data/pharma_signal_dsp.db
+    disk:
+      name: pharma-signal-data
+      mountPath: /data
+      sizeGB: 1
