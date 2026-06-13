@@ -197,6 +197,54 @@ export type Reporting = {
   campaigns: CampaignReport[];
 };
 
+export type MeasurementResultDetail = {
+  id: string;
+  plan_id: string;
+  campaign_id: string;
+  study_type: string;
+  exposed_rate: number;
+  control_rate: number;
+  observed_relative_lift_pct: number;
+  absolute_lift_pp: number;
+  ci_95_pp: [number, number];
+  p_value: number;
+  significant: boolean;
+  incremental_conversions: number;
+  cost_per_incremental_conversion: number | null;
+  roas: number | null;
+  media_spend: number;
+  planned_lift_pct: number;
+  planned_power: number;
+  verdict: string;
+};
+
+export type StoredResult = {
+  id: string;
+  plan_id: string;
+  campaign_id: string;
+  campaign_name: string;
+  observed_lift_pct: number;
+  absolute_lift_pp: number;
+  p_value: number;
+  significant: boolean;
+  incremental_conversions: number;
+  cpic: number | null;
+  roas: number | null;
+  created_at: string;
+};
+
+export type AudienceOverlap = {
+  audiences: { id: string; name: string; type: string; reach: number; npi_count: number; match_rate: number }[];
+  combined_reach: number;
+  deduplicated_unique_reach: number;
+  overlap: number;
+  overlap_pct: number;
+  addressable_npis: number;
+  avg_match_rate: number;
+  pairs: { a: string; b: string; overlap: number }[];
+  note: string;
+};
+
 export type ComplianceFinding = { severity: string; area: string; entity: string; issue: string };
 export type Compliance = {
   compliance_score: number;

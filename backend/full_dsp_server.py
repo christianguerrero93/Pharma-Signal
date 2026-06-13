@@ -44,8 +44,19 @@ from pydantic import BaseModel, Field
 
 from storage import STORAGE_BACKEND, conn, dicts
 
-app = FastAPI(title="Pharma Signal Full DSP", version="5.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Pharma Signal Full DSP", version="6.0.0")
+
+# CORS origins are configurable: default "*" for local dev, or a comma-separated
+# allowlist (e.g. "https://pharma-signal.netlify.app") to lock down production.
+_cors_setting = os.environ.get("CORS_ORIGINS", "*").strip()
+CORS_ORIGINS = ["*"] if _cors_setting in {"", "*"} else [o.strip() for o in _cors_setting.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=CORS_ORIGINS != ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 JWT_SECRET = os.environ.get("FULL_DSP_JWT_SECRET", "pharma-signal-dev-secret-change-me")
 JWT_TTL_SECONDS = int(os.environ.get("FULL_DSP_JWT_TTL", "43200"))  # 12 hours
@@ -329,6 +340,19 @@ class BidstreamRequest(BaseModel):
     seed: Optional[int] = None
 
 
+class OutcomeCreate(BaseModel):
+    exposed_n: int = Field(gt=0)
+    exposed_conversions: int = Field(ge=0)
+    control_n: int = Field(gt=0)
+    control_conversions: int = Field(ge=0)
+    media_spend: float = Field(gt=0)
+    rx_value_per_conversion: float = Field(default=0.0, ge=0)
+
+
+class OverlapRequest(BaseModel):
+    audience_ids: List[str] = Field(min_length=1)
+
+
 # ---------------------------------------------------------------------------
 # Database bootstrap + seed
 # ---------------------------------------------------------------------------
@@ -342,6 +366,7 @@ CREATE TABLE IF NOT EXISTS audiences (id TEXT PRIMARY KEY, name TEXT, audience_t
 CREATE TABLE IF NOT EXISTS creatives (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, fmt TEXT, channel TEXT, claims TEXT, isi_included INTEGER, landing_url TEXT, mlr_status TEXT, version INTEGER, reviewer TEXT, review_notes TEXT, submitted_at TEXT, decided_at TEXT);
 CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, partner TEXT, deal_id TEXT, deal_type TEXT, channel TEXT, floor_cpm REAL, audience_match REAL, status TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS measurement_plans (id TEXT PRIMARY KEY, campaign_id TEXT, study_type TEXT, baseline_rate REAL, expected_lift_pct REAL, exposed_size INTEGER, control_size INTEGER, power REAL, mdl REAL, status TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS measurement_results (id TEXT PRIMARY KEY, plan_id TEXT, campaign_id TEXT, exposed_n INTEGER, exposed_conversions INTEGER, control_n INTEGER, control_conversions INTEGER, media_spend REAL, rx_value REAL, observed_lift_pct REAL, absolute_lift_pp REAL, ci_low_pp REAL, ci_high_pp REAL, p_value REAL, significant INTEGER, incremental_conversions INTEGER, cpic REAL, roas REAL, created_at TEXT);
 CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
 """
 
@@ -731,6 +756,41 @@ def forecast_audience(payload: ForecastRequest, user: Dict[str, Any] = Depends(c
     return result
 
 
+@app.post("/api/full/audiences/overlap")
+def audience_overlap(payload: OverlapRequest, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    """Identity resolution: dedupe overlapping reach across audiences into unique reach."""
+    placeholders = ",".join("?" for _ in payload.audience_ids)
+    with conn() as db:
+        rows = dicts(db.execute(f"SELECT * FROM audiences WHERE id IN ({placeholders})", tuple(payload.audience_ids)).fetchall())
+    if not rows:
+        raise HTTPException(404, "No audiences found")
+    combined = sum(r["reach"] for r in rows)
+    addressable_npis = sum(r["npi_count"] for r in rows)
+    matched = [r for r in rows if r["match_rate"] > 0]
+    avg_match = round(sum(r["match_rate"] * r["reach"] for r in matched) / max(sum(r["reach"] for r in matched), 1), 3) if matched else 0.0
+    pairs, overlap_total = [], 0
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            a, b = rows[i], rows[j]
+            # Same-type audiences (e.g. HCP + HCP) overlap more than cross-type.
+            factor = 0.32 if a["audience_type"] == b["audience_type"] else 0.06
+            ov = int(min(a["reach"], b["reach"]) * factor)
+            overlap_total += ov
+            pairs.append({"a": a["name"], "b": b["name"], "overlap": ov})
+    deduped_unique = max(0, combined - overlap_total)
+    return {
+        "audiences": [{"id": r["id"], "name": r["name"], "type": r["audience_type"], "reach": r["reach"], "npi_count": r["npi_count"], "match_rate": r["match_rate"]} for r in rows],
+        "combined_reach": combined,
+        "deduplicated_unique_reach": deduped_unique,
+        "overlap": overlap_total,
+        "overlap_pct": round(overlap_total / max(combined, 1), 4),
+        "addressable_npis": addressable_npis,
+        "avg_match_rate": avg_match,
+        "pairs": pairs,
+        "note": "Identity resolution dedupes overlapping reach across audiences so unique addressable reach (not summed reach) drives planning and frequency.",
+    }
+
+
 @app.get("/api/full/frequency/governance")
 def frequency_governance(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     """Cross-channel HCP + DTC frequency coordination — a pharma-native gap."""
@@ -900,6 +960,74 @@ def create_measurement_plan(payload: MeasurementPlanCreate, user: Dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# Measurement: closed-loop observed results (Crossix / Swoop style)
+# ---------------------------------------------------------------------------
+@app.post("/api/full/measurement/{plan_id}/results")
+def record_measurement_results(plan_id: str, payload: OutcomeCreate, user: Dict[str, Any] = Depends(roles("admin", "analyst"))) -> Dict[str, Any]:
+    """Record observed exposed/control conversions and compute measured incremental lift."""
+    with conn() as db:
+        plan = db.execute("SELECT * FROM measurement_plans WHERE id=?", (plan_id,)).fetchone()
+    if not plan:
+        raise HTTPException(404, "Measurement plan not found")
+    plan = dict(plan)
+    p_exposed = payload.exposed_conversions / payload.exposed_n
+    p_control = payload.control_conversions / payload.control_n
+    absolute_lift = p_exposed - p_control
+    relative_lift_pct = round((p_exposed / p_control - 1) * 100, 2) if p_control > 0 else 0.0
+    pooled = (payload.exposed_conversions + payload.control_conversions) / (payload.exposed_n + payload.control_n)
+    se_pooled = math.sqrt(pooled * (1 - pooled) * (1 / payload.exposed_n + 1 / payload.control_n)) if 0 < pooled < 1 else 0.0
+    z = absolute_lift / se_pooled if se_pooled > 0 else 0.0
+    p_value = round(2 * (1 - norm_cdf(abs(z))), 5)
+    se_unpooled = math.sqrt(p_exposed * (1 - p_exposed) / payload.exposed_n + p_control * (1 - p_control) / payload.control_n)
+    ci_low_pp = round((absolute_lift - 1.96 * se_unpooled) * 100, 3)
+    ci_high_pp = round((absolute_lift + 1.96 * se_unpooled) * 100, 3)
+    significant = bool(p_value < 0.05 and absolute_lift > 0)
+    incremental = round(absolute_lift * payload.exposed_n)
+    cpic = round(payload.media_spend / incremental, 2) if incremental > 0 else None
+    incremental_value = incremental * payload.rx_value_per_conversion
+    roas = round(incremental_value / payload.media_spend, 2) if payload.media_spend > 0 and incremental > 0 else None
+    result_id = str(uuid4())
+    with conn() as db:
+        db.execute(
+            "INSERT INTO measurement_results VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (result_id, plan_id, plan["campaign_id"], payload.exposed_n, payload.exposed_conversions, payload.control_n, payload.control_conversions, payload.media_spend, payload.rx_value_per_conversion, relative_lift_pct, round(absolute_lift * 100, 3), ci_low_pp, ci_high_pp, p_value, int(significant), incremental, cpic, roas, now_iso()),
+        )
+        db.commit()
+    if significant:
+        verdict = "Significant incremental lift — campaign moved the outcome."
+    elif absolute_lift > 0:
+        verdict = "Positive but not statistically significant — collect more exposure or extend the flight."
+    else:
+        verdict = "No measured lift — revisit audience quality, supply paths, and frequency."
+    result = {
+        "id": result_id, "plan_id": plan_id, "campaign_id": plan["campaign_id"], "study_type": plan["study_type"],
+        "exposed_rate": round(p_exposed, 5), "control_rate": round(p_control, 5),
+        "observed_relative_lift_pct": relative_lift_pct,
+        "absolute_lift_pp": round(absolute_lift * 100, 3),
+        "ci_95_pp": [ci_low_pp, ci_high_pp],
+        "p_value": p_value, "significant": significant,
+        "incremental_conversions": incremental,
+        "cost_per_incremental_conversion": cpic,
+        "roas": roas, "media_spend": payload.media_spend,
+        "planned_lift_pct": plan["expected_lift_pct"], "planned_power": plan["power"],
+        "verdict": verdict,
+    }
+    audit(user["email"], "measurement_results", "campaign", plan["campaign_id"], {"significant": significant, "relative_lift_pct": relative_lift_pct, "p_value": p_value})
+    return result
+
+
+@app.get("/api/full/measurement/results")
+def list_measurement_results(user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
+    with conn() as db:
+        rows = dicts(db.execute("SELECT * FROM measurement_results ORDER BY created_at DESC").fetchall())
+        campaigns = {c["id"]: dict(c) for c in db.execute("SELECT id, name FROM campaigns").fetchall()}
+    for row in rows:
+        row["significant"] = bool(row["significant"])
+        row["campaign_name"] = campaigns.get(row["campaign_id"], {}).get("name", "—")
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Portfolio budget optimizer
 # ---------------------------------------------------------------------------
 @app.get("/api/full/optimizer/portfolio")
@@ -1036,6 +1164,7 @@ def overview(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
         deals = dicts(db.execute("SELECT * FROM deals").fetchall())
         supply = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
         plans = dicts(db.execute("SELECT * FROM measurement_plans").fetchall())
+        results = dicts(db.execute("SELECT * FROM measurement_results").fetchall())
     total_budget = sum(c["budget"] for c in campaigns)
     addressable_hcp = sum(a["npi_count"] for a in audiences if a["audience_type"] == "HCP")
     avg_working_media = round(sum(s["working_media_ratio"] for s in supply) / max(len(supply), 1), 3)
@@ -1053,6 +1182,8 @@ def overview(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
             "supply_paths": len(supply),
             "measurement_plans": len(plans),
             "measurement_ready": sum(1 for p in plans if p["status"] == "ready"),
+            "measured_studies": len(results),
+            "significant_studies": sum(1 for r in results if r["significant"]),
             "avg_working_media_ratio": avg_working_media,
         },
         "storage_backend": STORAGE_BACKEND,

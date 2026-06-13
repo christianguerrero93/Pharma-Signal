@@ -50,9 +50,13 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   plus a PMP / PG / curated **deal marketplace**.
 - **MLR creative review** — Medical-Legal-Regulatory workflow with versioning,
   approve / request-changes / reject decisions, ISI checks, and serve-gating.
-- **Measurement power planning** — script-lift / diagnosis-lift study design with a
-  real two-proportion **statistical power** computation, minimum detectable lift, and
-  readiness scoring.
+- **Measurement power planning + closed loop** — script-lift / diagnosis-lift study
+  design with a real two-proportion **statistical power** computation, minimum
+  detectable lift, and readiness scoring; plus a **Crossix-style closed loop** that
+  ingests observed exposed/control conversions and returns measured incremental lift,
+  95% CI, p-value, incremental conversions, cost-per-incremental-conversion, and ROAS.
+- **Identity resolution** — dedupe overlapping reach across audiences into unique
+  addressable reach (NPI-aware, same-type vs cross-type overlap modeling).
 - **Portfolio budget optimizer** — efficiency-ranked increase / hold / decrease
   reallocation recommendations.
 - **Reporting** — delivery, pacing status, CTR / CVR / CPA / eCPM, and daily series.

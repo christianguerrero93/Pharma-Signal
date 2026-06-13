@@ -1,6 +1,12 @@
 # Render.com blueprint for the Pharma Signal Full DSP backend.
 # Deploy: push to GitHub, then in Render "New > Blueprint" and pick this repo.
-# Works the same on Railway/Fly with their Docker support (they read backend/Dockerfile).
+# Provisions a managed Postgres and a Docker web service wired to it.
+databases:
+  - name: pharma-signal-db
+    databaseName: pharma_signal
+    user: pharma_signal
+    plan: free
+
 services:
   - type: web
     name: pharma-signal-api
@@ -10,13 +16,17 @@ services:
     healthCheckPath: /health
     plan: free
     envVars:
+      # Use the managed Postgres above (falls back to SQLite if unset).
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pharma-signal-db
+          property: connectionString
       # Seed login password for the dev users. Set a real value in the dashboard.
       - key: FULL_DSP_DEV_PASSWORD
         sync: false
-      # SQLite lives on the mounted disk so campaigns/audiences survive redeploys.
-      - key: FULL_DSP_DB
-        value: /data/pharma_signal_dsp.db
-    disk:
-      name: pharma-signal-data
-      mountPath: /data
-      sizeGB: 1
+      # Secret used to sign HS256 login JWTs. Generate a strong random value.
+      - key: FULL_DSP_JWT_SECRET
+        generateValue: true
+      # Restrict CORS to your frontend origin(s), comma-separated. Default "*".
+      - key: CORS_ORIGINS
+        sync: false
