@@ -137,3 +137,19 @@ npm install && npm run dev   # reads VITE_FULL_DSP_API_URL, defaults to http://l
 
 Seeded dev logins (password `pharma-signal-local`): `admin@pharmasignal.local`,
 `trader@pharmasignal.local`, `analyst@pharmasignal.local`.
+
+## 8. Auto-deploy on merge (CI-gated)
+
+`.github/workflows/deploy.yml` deploys automatically **after** the "Pharma Signal CI"
+workflow passes on `main`, so a red build never ships. It triggers Render and Netlify
+via their hooks; each step is a no-op until you add the matching secret.
+
+1. **Render deploy hook** — `pharma-signal-api` service → **Settings → Deploy Hook** → copy the URL.
+2. **Netlify build hook** — **Site configuration → Build & deploy → Build hooks → Add build hook** → copy the URL.
+3. **Add GitHub secrets** — repo **Settings → Secrets and variables → Actions → New repository secret**:
+   - `RENDER_DEPLOY_HOOK_URL` = the Render hook URL
+   - `NETLIFY_BUILD_HOOK_URL` = the Netlify hook URL
+4. **(Recommended)** Turn **off** auto-deploy in Render (service → Settings → Build & Deploy → Auto-Deploy: No) and Netlify (Site configuration → Build & deploy → Continuous deployment → Stop builds), so this CI-gated workflow is the single source of truth.
+
+Now every merge to `main` runs CI; on green, the backend and frontend redeploy. You can
+also run it manually from the **Actions** tab (**Deploy → Run workflow**).
