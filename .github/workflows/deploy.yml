@@ -12,7 +12,11 @@ name: Deploy
 #        name: RENDER_DEPLOY_HOOK_URL
 #   2. Netlify: Site configuration > Build & deploy > Build hooks > Add build hook
 #      GitHub secret name: NETLIFY_BUILD_HOOK_URL
-#   3. (Recommended) Turn OFF auto-deploy in Render and Netlify so this
+#   3. HEALTH_CHECK_URL secret = full backend health URL, e.g.
+#        https://pharma-signal-api.onrender.com/health
+#      Used to gate the deploy: the job fails if the backend is not healthy
+#      after the release rolls out.
+#   4. (Recommended) Turn OFF auto-deploy in Render and Netlify so this
 #      CI-gated workflow is the single source of truth for deploys.
 
 on:
@@ -31,6 +35,7 @@ jobs:
     env:
       RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
       NETLIFY_BUILD_HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
+      HEALTH_CHECK_URL: ${{ secrets.HEALTH_CHECK_URL }}
     steps:
       - name: Trigger Render backend deploy
         if: ${{ env.RENDER_DEPLOY_HOOK_URL != '' }}
@@ -44,10 +49,28 @@ jobs:
           echo "Triggering Netlify build..."
           curl -fsSL -X POST -d '{}' "$NETLIFY_BUILD_HOOK_URL" && echo "Netlify build triggered."
 
+      - name: Post-deploy backend health gate
+        if: ${{ env.HEALTH_CHECK_URL != '' }}
+        run: |
+          echo "Waiting for backend to report healthy at $HEALTH_CHECK_URL ..."
+          for i in $(seq 1 40); do
+            body="$(curl -fsS --max-time 10 "$HEALTH_CHECK_URL" 2>/dev/null || true)"
+            if echo "$body" | grep -q '"status":[[:space:]]*"ok"'; then
+              echo "Healthy after attempt $i: $body"
+              exit 0
+            fi
+            echo "attempt $i: not healthy yet, retrying in 15s"
+            sleep 15
+          done
+          echo "::error::Backend did not become healthy within ~10 minutes"
+          exit 1
+
       - name: Summary
+        if: ${{ always() }}
         run: |
           {
             echo "### Deploy triggers";
             if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then echo "- ✅ Render backend deploy triggered"; else echo "- ⏭️ Render skipped (set RENDER_DEPLOY_HOOK_URL secret)"; fi
             if [ -n "$NETLIFY_BUILD_HOOK_URL" ]; then echo "- ✅ Netlify frontend build triggered"; else echo "- ⏭️ Netlify skipped (set NETLIFY_BUILD_HOOK_URL secret)"; fi
+            if [ -n "$HEALTH_CHECK_URL" ]; then echo "- 🩺 Health gate ran against $HEALTH_CHECK_URL"; else echo "- ⏭️ Health gate skipped (set HEALTH_CHECK_URL secret)"; fi
           } >> "$GITHUB_STEP_SUMMARY"

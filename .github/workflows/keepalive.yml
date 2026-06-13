@@ -1,0 +1,35 @@
+name: Keep-alive
+
+# Pings the backend health endpoint on a schedule so Render's free tier (which
+# sleeps after ~15 min idle) stays warm and avoids cold-start latency.
+# No-op until the HEALTH_CHECK_URL secret is set to the full health URL, e.g.
+#   https://pharma-signal-api.onrender.com/health
+# Note: GitHub cron is best-effort and may be delayed under load.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 minutes
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    name: Ping backend health
+    runs-on: ubuntu-latest
+    env:
+      HEALTH_CHECK_URL: ${{ secrets.HEALTH_CHECK_URL }}
+    steps:
+      - name: Ping
+        if: ${{ env.HEALTH_CHECK_URL != '' }}
+        run: |
+          for i in 1 2 3; do
+            if curl -fsS --max-time 25 "$HEALTH_CHECK_URL" >/dev/null; then
+              echo "Backend awake ($HEALTH_CHECK_URL)"
+              exit 0
+            fi
+            echo "ping $i failed (likely cold start), retrying in 20s"
+            sleep 20
+          done
+          echo "Backend did not respond; it may be waking — not failing the schedule."
+      - name: Not configured
+        if: ${{ env.HEALTH_CHECK_URL == '' }}
+        run: echo "HEALTH_CHECK_URL secret not set — skipping keep-alive."
