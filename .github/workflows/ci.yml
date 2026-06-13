@@ -90,7 +90,14 @@ jobs:
           mp = client.post('/api/full/measurement/plan', headers=headers, json={'campaign_id': campaign_id, 'study_type': 'script_lift', 'baseline_rate': 0.02, 'expected_lift_pct': 15, 'exposed_size': 80000, 'control_size': 80000})
           assert mp.status_code == 200 and 0 <= mp.json()['power'] <= 1, mp.text
 
-          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/reporting/performance', '/api/full/compliance/scan', '/api/full/frequency/governance']:
+          results = client.post(f"/api/full/measurement/{mp.json()['id']}/results", headers=headers, json={'exposed_n': 80000, 'exposed_conversions': 1840, 'control_n': 80000, 'control_conversions': 1600, 'media_spend': 250000, 'rx_value_per_conversion': 3000})
+          assert results.status_code == 200 and results.json()['significant'] is True, results.text
+
+          auds = client.get('/api/full/audiences', headers=headers).json()
+          overlap = client.post('/api/full/audiences/overlap', headers=headers, json={'audience_ids': [auds[0]['id'], auds[1]['id']]})
+          assert overlap.status_code == 200 and overlap.json()['deduplicated_unique_reach'] > 0, overlap.text
+
+          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/reporting/performance', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'
 

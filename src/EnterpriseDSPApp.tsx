@@ -5,9 +5,9 @@ import {
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
-  Audience, BidFactors, Bidstream, Campaign, Compliance, Creative, Deal, Forecast,
-  FrequencyGovernance, MeasurementPlan, Optimizer, Overview, RankedSupply, Reporting,
-  SupplyOptimize, SupplyPath, User, Workbench,
+  Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Compliance, Creative, Deal, Forecast,
+  FrequencyGovernance, MeasurementPlan, MeasurementResultDetail, Optimizer, Overview, RankedSupply, Reporting,
+  StoredResult, SupplyOptimize, SupplyPath, User, Workbench,
 } from './api/fullDspClient';
 
 // ---------------------------------------------------------------------------
@@ -362,9 +362,20 @@ function AudiencesTab({ client, setError }: TabProps) {
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [form, setForm] = useState({ audience_id: '', budget: 250000, cpm: 18, frequency_cap: 3, flight_days: 30 });
   const [newAud, setNewAud] = useState({ name: 'Cardiology HCP - High Decile', audience_type: 'HCP', description: 'NPI-verified cardiologists, decile 7-10', npi_count: 52000, reach: 52000, match_rate: 0.89, data_cpm: 11, refresh_cadence: 'weekly', contains_phi: false, status: 'active' });
+  const [overlapIds, setOverlapIds] = useState<string[]>([]);
+  const [overlap, setOverlap] = useState<AudienceOverlap | null>(null);
 
   const load = useCallback(() => { client.get<Audience[]>('/api/full/audiences').then((a) => { setAudiences(a); if (a[0] && !form.audience_id) setForm((f) => ({ ...f, audience_id: a[0].id })); }).catch((e) => setError(friendlyError(e, 'Load audiences failed'))); }, [client, setError, form.audience_id]);
   useEffect(() => { load(); }, [load]);
+
+  function toggleOverlap(id: string) {
+    setOverlapIds((ids) => (ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]));
+  }
+  async function computeOverlap() {
+    if (overlapIds.length < 1) return;
+    setBusy(true);
+    try { setOverlap(await client.post<AudienceOverlap>('/api/full/audiences/overlap', { audience_ids: overlapIds })); } catch (e) { setError(friendlyError(e, 'Overlap failed')); } finally { setBusy(false); }
+  }
 
   async function runForecast(event: FormEvent) {
     event.preventDefault();
@@ -436,6 +447,35 @@ function AudiencesTab({ client, setError }: TabProps) {
           <small>Audiences flagged as containing PHI are rejected at onboarding — a hard pharma guardrail.</small>
         </form>
       </div>
+
+      <Panel eyebrow="Identity resolution" title="Audience overlap & dedupe" icon={<Users />}
+        actions={<button className="primary-button" disabled={busy || overlapIds.length < 1} onClick={computeOverlap}><Zap size={16} /> Resolve {overlapIds.length || ''}</button>}>
+        <p>Select audiences to resolve overlapping identities into unique addressable reach.</p>
+        <div className="chip-row">
+          {audiences.map((a) => (
+            <button type="button" key={a.id} className={`chip ${overlapIds.includes(a.id) ? 'on' : ''}`} onClick={() => toggleOverlap(a.id)}>
+              {a.name} <small>{a.audience_type}</small>
+            </button>
+          ))}
+        </div>
+        {overlap && (
+          <>
+            <div className="result-grid">
+              <div className="metric-card"><span>Combined reach</span><strong>{num(overlap.combined_reach)}</strong></div>
+              <div className="metric-card"><span>Unique (deduped)</span><strong className="ok">{num(overlap.deduplicated_unique_reach)}</strong></div>
+              <div className="metric-card"><span>Overlap</span><strong>{num(overlap.overlap)} ({pct1(overlap.overlap_pct)})</strong></div>
+              <div className="metric-card"><span>Addressable NPIs</span><strong>{num(overlap.addressable_npis)}</strong></div>
+              <div className="metric-card"><span>Avg match rate</span><strong>{pct(overlap.avg_match_rate)}</strong></div>
+            </div>
+            {overlap.pairs.length > 0 && (
+              <div className="table-list">
+                {overlap.pairs.map((p, i) => <div key={i}><strong>{num(p.overlap)} overlapping</strong><span>{p.a} ∩ {p.b}</span></div>)}
+              </div>
+            )}
+            <p className="interpretation">{overlap.note}</p>
+          </>
+        )}
+      </Panel>
     </>
   );
 }
@@ -695,15 +735,34 @@ function MeasurementTab({ client, workbench, setError }: { client: Client; workb
   const [plans, setPlans] = useState<MeasurementPlan[]>([]);
   const [result, setResult] = useState<MeasurementPlan | null>(null);
   const [form, setForm] = useState({ campaign_id: '', study_type: 'script_lift', baseline_rate: 0.02, expected_lift_pct: 15, exposed_size: 80000, control_size: 80000 });
+  const [results, setResults] = useState<StoredResult[]>([]);
+  const [resultDetail, setResultDetail] = useState<MeasurementResultDetail | null>(null);
+  const [resultForm, setResultForm] = useState({ plan_id: '', exposed_n: 80000, exposed_conversions: 1840, control_n: 80000, control_conversions: 1600, media_spend: 250000, rx_value_per_conversion: 3000 });
 
-  const load = useCallback(() => client.get<MeasurementPlan[]>('/api/full/measurement/plans').then(setPlans).catch(() => {}), [client]);
+  const load = useCallback(() => {
+    client.get<MeasurementPlan[]>('/api/full/measurement/plans').then(setPlans).catch(() => {});
+    client.get<StoredResult[]>('/api/full/measurement/results').then(setResults).catch(() => {});
+  }, [client]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (campaigns[0] && !form.campaign_id) setForm((f) => ({ ...f, campaign_id: campaigns[0].id })); }, [campaigns, form.campaign_id]);
+  useEffect(() => { if (plans[0] && !resultForm.plan_id) setResultForm((f) => ({ ...f, plan_id: plans[0].id })); }, [plans, resultForm.plan_id]);
 
   async function plan(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     try { const r = await client.post<MeasurementPlan>('/api/full/measurement/plan', form); setResult(r); load(); } catch (e) { setError(friendlyError(e, 'Measurement plan failed')); } finally { setBusy(false); }
+  }
+
+  async function recordResults(event: FormEvent) {
+    event.preventDefault();
+    if (!resultForm.plan_id) return;
+    setBusy(true);
+    try {
+      const { plan_id, ...body } = resultForm;
+      const r = await client.post<MeasurementResultDetail>(`/api/full/measurement/${plan_id}/results`, body);
+      setResultDetail(r);
+      load();
+    } catch (e) { setError(friendlyError(e, 'Recording results failed')); } finally { setBusy(false); }
   }
 
   const tone = (r?: string) => (r === 'ready' ? 'ok' : r === 'borderline' ? 'warn' : 'danger');
@@ -749,6 +808,54 @@ function MeasurementTab({ client, workbench, setError }: { client: Client; workb
             </div>
           ))}
           {!plans.length && <p>No measurement plans yet.</p>}
+        </div>
+      </Panel>
+
+      <form className="dsp-panel" onSubmit={recordResults}>
+        <div className="panel-title"><div><p className="eyebrow">Closed loop</p><h2>Record observed results (Crossix-style)</h2></div><Target /></div>
+        <div className="form-grid two-col">
+          <label>Plan<select value={resultForm.plan_id} onChange={(e) => setResultForm({ ...resultForm, plan_id: e.target.value })}>{plans.map((p) => <option key={p.id} value={p.id}>{p.study_type.replaceAll('_', ' ')} · {pct1(p.baseline_rate)} base</option>)}</select></label>
+          <label>Media spend<input type="number" value={resultForm.media_spend} onChange={(e) => setResultForm({ ...resultForm, media_spend: Number(e.target.value) })} /></label>
+          <label>Exposed n<input type="number" value={resultForm.exposed_n} onChange={(e) => setResultForm({ ...resultForm, exposed_n: Number(e.target.value) })} /></label>
+          <label>Exposed conversions<input type="number" value={resultForm.exposed_conversions} onChange={(e) => setResultForm({ ...resultForm, exposed_conversions: Number(e.target.value) })} /></label>
+          <label>Control n<input type="number" value={resultForm.control_n} onChange={(e) => setResultForm({ ...resultForm, control_n: Number(e.target.value) })} /></label>
+          <label>Control conversions<input type="number" value={resultForm.control_conversions} onChange={(e) => setResultForm({ ...resultForm, control_conversions: Number(e.target.value) })} /></label>
+          <label>Rx value / conversion<input type="number" value={resultForm.rx_value_per_conversion} onChange={(e) => setResultForm({ ...resultForm, rx_value_per_conversion: Number(e.target.value) })} /></label>
+        </div>
+        <button className="primary-button" disabled={busy || !resultForm.plan_id}><Zap size={16} /> Measure lift</button>
+        {resultDetail && (
+          <>
+            <div className="result-grid">
+              <div className="metric-card"><span>Observed lift</span><strong className={resultDetail.significant ? 'ok' : 'warn'}>{resultDetail.observed_relative_lift_pct}%</strong></div>
+              <div className="metric-card"><span>Absolute lift</span><strong>{resultDetail.absolute_lift_pp} pp</strong></div>
+              <div className="metric-card"><span>95% CI (pp)</span><strong>{resultDetail.ci_95_pp[0]} – {resultDetail.ci_95_pp[1]}</strong></div>
+              <div className="metric-card"><span>p-value</span><strong>{resultDetail.p_value}</strong></div>
+              <div className="metric-card"><span>Significant</span><strong><Badge tone={resultDetail.significant ? 'ok' : 'danger'}>{resultDetail.significant ? 'yes' : 'no'}</Badge></strong></div>
+              <div className="metric-card"><span>Incremental conv.</span><strong>{num(resultDetail.incremental_conversions)}</strong></div>
+              <div className="metric-card"><span>Cost / incremental</span><strong>{resultDetail.cost_per_incremental_conversion ? money2(resultDetail.cost_per_incremental_conversion) : '—'}</strong></div>
+              <div className="metric-card"><span>ROAS</span><strong>{resultDetail.roas ? `${resultDetail.roas}x` : '—'}</strong></div>
+            </div>
+            <p className="interpretation">{resultDetail.verdict} (planned {resultDetail.planned_lift_pct}% lift at {pct(resultDetail.planned_power)} power)</p>
+          </>
+        )}
+      </form>
+
+      <Panel eyebrow="Measured outcomes" title="Closed-loop results" icon={<Target />}>
+        <div className="data-table">
+          <div className="data-head result-cols"><span>Campaign</span><span>Lift</span><span>Abs (pp)</span><span>p-value</span><span>Incremental</span><span>CPIC</span><span>ROAS</span><span>Verdict</span></div>
+          {results.map((r) => (
+            <div className="data-row result-cols" key={r.id}>
+              <strong>{r.campaign_name}</strong>
+              <span>{r.observed_lift_pct}%</span>
+              <span>{r.absolute_lift_pp}</span>
+              <span>{r.p_value}</span>
+              <span>{num(r.incremental_conversions)}</span>
+              <span>{r.cpic ? money2(r.cpic) : '—'}</span>
+              <span>{r.roas ? `${r.roas}x` : '—'}</span>
+              <span><Badge tone={r.significant ? 'ok' : 'muted'}>{r.significant ? 'significant' : 'n.s.'}</Badge></span>
+            </div>
+          ))}
+          {!results.length && <p>No measured results yet — record observed conversions above.</p>}
         </div>
       </Panel>
     </>

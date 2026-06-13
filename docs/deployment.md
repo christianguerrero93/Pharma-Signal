@@ -19,8 +19,8 @@ database at `FULL_DSP_DB` (default `/data/pharma_signal_dsp.db` in the image).
 ### Option A — Render (one-click blueprint)
 
 A `render.yaml` blueprint is included. In Render: **New → Blueprint**, pick this
-repo, and it provisions a Docker web service with a 1 GB persistent disk mounted
-at `/data` (so campaigns/audiences survive redeploys) and a `/health` check.
+repo, and it provisions a **managed Postgres** plus a Docker web service wired to
+it via `DATABASE_URL`, with a generated `FULL_DSP_JWT_SECRET` and a `/health` check.
 
 Set these in the Render dashboard:
 
@@ -100,10 +100,12 @@ Always set a strong `FULL_DSP_JWT_SECRET` in production.
 
 ## 5. CORS
 
-The backend already sends permissive CORS headers
-(`allow_origins=["*"]`), so the static frontend can call it cross-origin from
-Netlify/Vercel out of the box. To lock it down, restrict the origins in
-`full_dsp_server.py`'s `CORSMiddleware` to your frontend domain(s).
+CORS origins are controlled by the `CORS_ORIGINS` env var:
+
+- Unset or `*` (default) — permissive, so the static frontend works cross-origin out of the box during development.
+- A comma-separated allowlist — locks the API to those origins, e.g.
+  `CORS_ORIGINS=https://pharma-signal.netlify.app`. Set this in production; only the
+  listed origins receive `Access-Control-Allow-Origin`.
 
 ---
 
