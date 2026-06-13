@@ -1,0 +1,48 @@
+name: Pharma Signal CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm install
+      - run: npm run lint
+      - run: npm run build
+
+  backend-enterprise:
+    name: Enterprise backend smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r backend/requirements.txt
+      - run: python -m py_compile backend/enterprise_server.py
+      - run: python - <<'PY'
+          import sys
+          sys.path.insert(0, 'backend')
+          from fastapi.testclient import TestClient
+          from enterprise_server import app
+          client = TestClient(app)
+          health = client.get('/health')
+          assert health.status_code == 200, health.text
+          dashboard = client.get('/api/v2/executive-dashboard', headers={'x-pharma-role': 'ceo'})
+          assert dashboard.status_code == 200, dashboard.text
+          assert dashboard.json()['total_budget'] > 0
+          narrative = client.get('/api/v2/board/narrative', headers={'x-pharma-role': 'ceo'})
+          assert narrative.status_code == 200, narrative.text
+          print('enterprise backend smoke test passed')
+          PY
