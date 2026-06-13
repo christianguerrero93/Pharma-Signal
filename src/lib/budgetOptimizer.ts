@@ -44,7 +44,7 @@ export function optimizePortfolioBudget(
     const budgetMultiplier = clamp(0.82 + priorityWeight * 0.28 + (conversionEfficiency - 1) * 0.18 + (pacingWeight - 1) * 0.12, 0.72, 1.24);
     const recommendedBudget = Math.round((campaign.budget * budgetMultiplier) / 1000) * 1000;
     const delta = recommendedBudget - campaign.budget;
-    const status = delta > campaign.budget * 0.05 ? 'increase' : delta < campaign.budget * -0.05 ? 'decrease' : 'hold';
+    const status: 'increase' | 'hold' | 'decrease' = delta > campaign.budget * 0.05 ? 'increase' : delta < campaign.budget * -0.05 ? 'decrease' : 'hold';
 
     const guardrails = [
       campaign.audienceType === 'HCP' ? 'Protect NPI precision and HCP-only reporting.' : '',

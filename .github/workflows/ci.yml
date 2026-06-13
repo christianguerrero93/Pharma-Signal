@@ -53,3 +53,43 @@ jobs:
 
           print('enterprise backend smoke test passed')
           PY
+      - name: Smoke test full DSP API
+        env:
+          FULL_DSP_DB: /tmp/pharma_signal_ci.db
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'backend')
+          from fastapi.testclient import TestClient
+          from full_dsp_server import app
+
+          client = TestClient(app)
+          assert client.get('/health').json()['status'] == 'ok'
+
+          token = client.post('/api/full/auth/login', json={'email': 'admin@pharmasignal.local', 'password': 'pharma-signal-local'}).json()['access_token']
+          headers = {'Authorization': f'Bearer {token}'}
+
+          build = client.post('/api/full/campaign-build', headers=headers, json={
+              'campaign': {'name': 'CI Launch', 'brand': 'TZIELD', 'indication': 'T1D delay', 'audience_type': 'DTC', 'objective': 'lift', 'budget': 500000, 'flight_start': '2026-07-01', 'flight_end': '2026-12-31', 'status': 'active'},
+              'line_items': [{'name': 'Display', 'channel': 'Display', 'budget': 250000, 'max_bid_cpm': 24, 'pacing_mode': 'even', 'status': 'active', 'frequency_cap': 3}],
+          })
+          assert build.status_code == 200, build.text
+          line_id = build.json()['line_items'][0]['id']
+          campaign_id = build.json()['campaign_id']
+
+          aud_id = client.get('/api/full/audiences', headers=headers).json()[0]['id']
+          fc = client.post('/api/full/audiences/forecast', headers=headers, json={'audience_id': aud_id, 'budget': 250000, 'cpm': 24, 'frequency_cap': 3, 'flight_days': 30})
+          assert fc.status_code == 200 and fc.json()['unique_reach'] > 0, fc.text
+
+          sim = client.post('/api/full/bidstream/simulate', headers=headers, json={'line_item_id': line_id, 'requests': 500, 'seed': 1, 'phi_leak_rate': 0.05})
+          assert sim.status_code == 200 and sim.json()['phi_blocked'] >= 0, sim.text
+
+          mp = client.post('/api/full/measurement/plan', headers=headers, json={'campaign_id': campaign_id, 'study_type': 'script_lift', 'baseline_rate': 0.02, 'expected_lift_pct': 15, 'exposed_size': 80000, 'control_size': 80000})
+          assert mp.status_code == 200 and 0 <= mp.json()['power'] <= 1, mp.text
+
+          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/reporting/performance', '/api/full/compliance/scan', '/api/full/frequency/governance']:
+              r = client.get(path, headers=headers)
+              assert r.status_code == 200, f'{path}: {r.text}'
+
+          print('full DSP backend smoke test passed')
+          PY

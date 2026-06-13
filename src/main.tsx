@@ -4,6 +4,7 @@ import EnterpriseDSPApp from './EnterpriseDSPApp';
 import './styles.css';
 import './dspContinuation.css';
 import './enterpriseDsp.css';
+import './fullDsp.css';
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
