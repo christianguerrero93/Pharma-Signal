@@ -32,7 +32,7 @@ jobs:
       # The smoke tests only exercise the FastAPI app surfaces, so install just
       # those dependencies instead of the full backend/requirements.txt (which
       # pins emergentintegrations, a package not available on public PyPI).
-      - run: pip install fastapi uvicorn "pydantic>=2.6.4" httpx
+      - run: pip install fastapi uvicorn "pydantic>=2.6.4" httpx bcrypt
       - run: python -m py_compile backend/enterprise_server.py
       - run: python -m py_compile backend/full_dsp_server.py
       - name: Smoke test enterprise API

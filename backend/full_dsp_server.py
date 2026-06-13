@@ -1,12 +1,16 @@
 """Pharma Signal Full DSP Server.
 
-Functional pharma-native Demand-Side Platform backend with SQLite persistence.
+Functional pharma-native Demand-Side Platform backend.
+
+Storage: SQLite by default, or Postgres when DATABASE_URL is set (see storage.py).
+Auth: HS256 JWT (stdlib hmac) + bcrypt password hashing + role-based access.
 
 Capabilities (DeepIntent-class + pharma-native differentiators):
   - Auth, roles, and an append-only audit trail on every mutation
   - Campaign + line-item planning with flights, pacing, and budgets
   - Weighted, outcome-aware bid-factor engine and single-impression auction eval
-  - OpenRTB-style bidstream simulation (win rate / spend / clearing analytics)
+  - OpenRTB-style bidstream simulation with second-price clearing, pacing, and
+    per-user frequency capping
   - HCP / DTC / lookalike / contextual audience library with reach & frequency
     forecasting, NPI-level sizing, match-rate and data-cost transparency
   - MLR (Medical-Legal-Regulatory) creative review workflow with versioning
@@ -21,27 +25,30 @@ Run: uvicorn full_dsp_server:app --reload --port 8090
 """
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import math
 import os
 import random
-import secrets
-import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+import bcrypt
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-DB_PATH = Path(os.environ.get("FULL_DSP_DB", Path(__file__).with_name("pharma_signal_dsp.db")))
-SESSIONS: Dict[str, Dict[str, Any]] = {}
+from storage import STORAGE_BACKEND, conn, dicts
 
-app = FastAPI(title="Pharma Signal Full DSP", version="4.0.0")
+app = FastAPI(title="Pharma Signal Full DSP", version="5.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+JWT_SECRET = os.environ.get("FULL_DSP_JWT_SECRET", "pharma-signal-dev-secret-change-me")
+JWT_TTL_SECONDS = int(os.environ.get("FULL_DSP_JWT_TTL", "43200"))  # 12 hours
 
 
 # ---------------------------------------------------------------------------
@@ -49,20 +56,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 # ---------------------------------------------------------------------------
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def conn() -> sqlite3.Connection:
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def dicts(rows: List[sqlite3.Row]) -> List[Dict[str, Any]]:
-    return [dict(row) for row in rows]
-
-
-def digest(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def audit(actor: str, action: str, entity_type: str, entity_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -74,14 +67,66 @@ def audit(actor: str, action: str, entity_type: str, entity_id: str, metadata: O
         db.commit()
 
 
+# ---------------------------------------------------------------------------
+# Auth: bcrypt password hashing + stdlib HS256 JWT
+# ---------------------------------------------------------------------------
+def hash_password(plain: str) -> str:
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def verify_password(plain: str, stored: str) -> bool:
+    if stored.startswith("$2"):
+        try:
+            return bcrypt.checkpw(plain.encode("utf-8"), stored.encode("utf-8"))
+        except ValueError:
+            return False
+    # Legacy sha256 hashes from earlier versions (migrated to bcrypt on login).
+    return hashlib.sha256(plain.encode("utf-8")).hexdigest() == stored
+
+
+def _b64u(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64u_decode(segment: str) -> bytes:
+    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+
+
+def create_access_token(user: Dict[str, Any]) -> str:
+    now = int(time.time())
+    header = {"alg": "HS256", "typ": "JWT"}
+    payload = {"sub": user["id"], "email": user["email"], "role": user["role"], "iat": now, "exp": now + JWT_TTL_SECONDS}
+    signing_input = _b64u(json.dumps(header, separators=(",", ":")).encode()) + "." + _b64u(json.dumps(payload, separators=(",", ":")).encode())
+    signature = _b64u(hmac.new(JWT_SECRET.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest())
+    return f"{signing_input}.{signature}"
+
+
+def decode_access_token(token: str) -> Dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise HTTPException(401, "Malformed token")
+    header_b64, payload_b64, signature_b64 = parts
+    expected = _b64u(hmac.new(JWT_SECRET.encode("utf-8"), f"{header_b64}.{payload_b64}".encode("ascii"), hashlib.sha256).digest())
+    if not hmac.compare_digest(expected, signature_b64):
+        raise HTTPException(401, "Invalid token signature")
+    try:
+        payload = json.loads(_b64u_decode(payload_b64))
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(401, "Invalid token payload")
+    if int(payload.get("exp", 0)) < int(time.time()):
+        raise HTTPException(401, "Token expired")
+    return payload
+
+
 def current_user(authorization: str = Header(default="")) -> Dict[str, Any]:
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing bearer token")
-    token = authorization.replace("Bearer ", "", 1)
-    user = SESSIONS.get(token)
-    if not user:
-        raise HTTPException(401, "Invalid session")
-    return user
+    claims = decode_access_token(authorization[7:])
+    with conn() as db:
+        row = db.execute("SELECT id, email, name, role, created_at FROM users WHERE id=?", (claims["sub"],)).fetchone()
+    if not row:
+        raise HTTPException(401, "User no longer exists")
+    return dict(row)
 
 
 def roles(*allowed: str):
@@ -287,32 +332,38 @@ class BidstreamRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Database bootstrap + seed
 # ---------------------------------------------------------------------------
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT, name TEXT, role TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, name TEXT, brand TEXT, indication TEXT, audience_type TEXT, objective TEXT, budget REAL, flight_start TEXT, flight_end TEXT, status TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS line_items (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, channel TEXT, budget REAL, max_bid_cpm REAL, pacing_mode TEXT, status TEXT, frequency_cap INTEGER, created_at TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS bid_factors (line_item_id TEXT PRIMARY KEY, audience_quality_weight REAL, supply_quality_weight REAL, outcome_signal_weight REAL, contextual_relevance_weight REAL, working_media_weight REAL, frequency_penalty_weight REAL, bid_shading_pct REAL, max_bid_multiplier REAL, data_cost_guardrail REAL, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS supply_paths (id TEXT PRIMARY KEY, partner TEXT, channel TEXT, deal_id TEXT, seller_type TEXT, bid_floor_cpm REAL, viewability REAL, fraud_risk REAL, match_rate REAL, working_media_ratio REAL, outcome_score REAL, status TEXT);
+CREATE TABLE IF NOT EXISTS audiences (id TEXT PRIMARY KEY, name TEXT, audience_type TEXT, description TEXT, npi_count INTEGER, reach INTEGER, match_rate REAL, data_cpm REAL, refresh_cadence TEXT, contains_phi INTEGER, status TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS creatives (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, fmt TEXT, channel TEXT, claims TEXT, isi_included INTEGER, landing_url TEXT, mlr_status TEXT, version INTEGER, reviewer TEXT, review_notes TEXT, submitted_at TEXT, decided_at TEXT);
+CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, partner TEXT, deal_id TEXT, deal_type TEXT, channel TEXT, floor_cpm REAL, audience_match REAL, status TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS measurement_plans (id TEXT PRIMARY KEY, campaign_id TEXT, study_type TEXT, baseline_rate REAL, expected_lift_pct REAL, exposed_size INTEGER, control_size INTEGER, power REAL, mdl REAL, status TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
+"""
+
+
 def init_db() -> None:
     with conn() as db:
-        db.executescript("""
-        CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE, password_hash TEXT, name TEXT, role TEXT, created_at TEXT);
-        CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, name TEXT, brand TEXT, indication TEXT, audience_type TEXT, objective TEXT, budget REAL, flight_start TEXT, flight_end TEXT, status TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
-        CREATE TABLE IF NOT EXISTS line_items (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, channel TEXT, budget REAL, max_bid_cpm REAL, pacing_mode TEXT, status TEXT, frequency_cap INTEGER, created_at TEXT, updated_at TEXT);
-        CREATE TABLE IF NOT EXISTS bid_factors (line_item_id TEXT PRIMARY KEY, audience_quality_weight REAL, supply_quality_weight REAL, outcome_signal_weight REAL, contextual_relevance_weight REAL, working_media_weight REAL, frequency_penalty_weight REAL, bid_shading_pct REAL, max_bid_multiplier REAL, data_cost_guardrail REAL, updated_at TEXT);
-        CREATE TABLE IF NOT EXISTS supply_paths (id TEXT PRIMARY KEY, partner TEXT, channel TEXT, deal_id TEXT, seller_type TEXT, bid_floor_cpm REAL, viewability REAL, fraud_risk REAL, match_rate REAL, working_media_ratio REAL, outcome_score REAL, status TEXT);
-        CREATE TABLE IF NOT EXISTS audiences (id TEXT PRIMARY KEY, name TEXT, audience_type TEXT, description TEXT, npi_count INTEGER, reach INTEGER, match_rate REAL, data_cpm REAL, refresh_cadence TEXT, contains_phi INTEGER, status TEXT, created_at TEXT);
-        CREATE TABLE IF NOT EXISTS creatives (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, fmt TEXT, channel TEXT, claims TEXT, isi_included INTEGER, landing_url TEXT, mlr_status TEXT, version INTEGER, reviewer TEXT, review_notes TEXT, submitted_at TEXT, decided_at TEXT);
-        CREATE TABLE IF NOT EXISTS deals (id TEXT PRIMARY KEY, partner TEXT, deal_id TEXT, deal_type TEXT, channel TEXT, floor_cpm REAL, audience_match REAL, status TEXT, created_at TEXT);
-        CREATE TABLE IF NOT EXISTS measurement_plans (id TEXT PRIMARY KEY, campaign_id TEXT, study_type TEXT, baseline_rate REAL, expected_lift_pct REAL, exposed_size INTEGER, control_size INTEGER, power REAL, mdl REAL, status TEXT, created_at TEXT);
-        CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
-        """)
-        seed_password = os.environ.get("FULL_DSP_DEV_PASSWORD", "pharma-signal-local")
-        for email, name, role in [("admin@pharmasignal.local", "Admin", "admin"), ("trader@pharmasignal.local", "Trader", "trader"), ("analyst@pharmasignal.local", "Analyst", "analyst")]:
-            db.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?, ?)", (str(uuid4()), email, digest(seed_password), name, role, now_iso()))
-        seed_supply = [
-            ("PubMatic", "Display", "PM-PHARMA-HCP-001", "Direct", 6.8, 69, 1.1, 71, 0.54, 82, "approved"),
-            ("OpenX", "Display", "OX-HEALTH-WEB-117", "SPO verified", 7.4, 72, 1.4, 68, 0.62, 79, "approved"),
-            ("Magnite", "CTV", "MG-CTV-RSV-902", "Direct", 21.8, 92, 0.4, 62, 0.71, 88, "approved"),
-            ("Index Exchange", "Display", "IX-PHARMA-WEB-219", "SPO verified", 5.4, 78, 0.8, 58, 0.70, 84, "review"),
-            ("Endemic Health Network", "Native", "EH-ONC-NATIVE-009", "Direct", 24.0, 81, 0.5, 64, 0.58, 91, "approved"),
-        ]
-        for row in seed_supply:
-            db.execute("INSERT OR IGNORE INTO supply_paths VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), *row))
+        db.executescript(SCHEMA)
+        if not db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            seed_password = os.environ.get("FULL_DSP_DEV_PASSWORD", "pharma-signal-local")
+            pw_hash = hash_password(seed_password)
+            for email, name, role in [("admin@pharmasignal.local", "Admin", "admin"), ("trader@pharmasignal.local", "Trader", "trader"), ("analyst@pharmasignal.local", "Analyst", "analyst")]:
+                db.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?, ?)", (str(uuid4()), email, pw_hash, name, role, now_iso()))
+        if not db.execute("SELECT 1 FROM supply_paths LIMIT 1").fetchone():
+            seed_supply = [
+                ("PubMatic", "Display", "PM-PHARMA-HCP-001", "Direct", 6.8, 69, 1.1, 71, 0.54, 82, "approved"),
+                ("OpenX", "Display", "OX-HEALTH-WEB-117", "SPO verified", 7.4, 72, 1.4, 68, 0.62, 79, "approved"),
+                ("Magnite", "CTV", "MG-CTV-RSV-902", "Direct", 21.8, 92, 0.4, 62, 0.71, 88, "approved"),
+                ("Index Exchange", "Display", "IX-PHARMA-WEB-219", "SPO verified", 5.4, 78, 0.8, 58, 0.70, 84, "review"),
+                ("Endemic Health Network", "Native", "EH-ONC-NATIVE-009", "Direct", 24.0, 81, 0.5, 64, 0.58, 91, "approved"),
+            ]
+            for row in seed_supply:
+                db.execute("INSERT INTO supply_paths VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), *row))
         if not db.execute("SELECT 1 FROM audiences LIMIT 1").fetchone():
             seed_aud = [
                 ("Endocrinologists - T1D Treaters", "HCP", "NPI-verified endocrinologists with recent T1D Rx activity", 48200, 48200, 0.91, 12.5, "weekly", 0, "active"),
@@ -346,7 +397,7 @@ def startup() -> None:
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health() -> Dict[str, str]:
-    return {"status": "ok", "service": "pharma-signal-full-dsp"}
+    return {"status": "ok", "service": "pharma-signal-full-dsp", "storage": STORAGE_BACKEND}
 
 
 @app.post("/api/full/auth/login")
@@ -354,11 +405,14 @@ def login(payload: LoginRequest) -> Dict[str, Any]:
     init_db()
     with conn() as db:
         row = db.execute("SELECT * FROM users WHERE lower(email)=lower(?)", (payload.email,)).fetchone()
-    if not row or row["password_hash"] != digest(payload.password):
-        raise HTTPException(401, "Invalid email or password")
-    user = {k: row[k] for k in row.keys() if k != "password_hash"}
-    token = secrets.token_urlsafe(32)
-    SESSIONS[token] = user
+        if not row or not verify_password(payload.password, row["password_hash"]):
+            raise HTTPException(401, "Invalid email or password")
+        row = dict(row)
+        if not row["password_hash"].startswith("$2"):
+            db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(payload.password), row["id"]))
+            db.commit()
+    user = {k: row[k] for k in row if k != "password_hash"}
+    token = create_access_token(user)
     audit(user["email"], "login", "user", user["id"], {"role": user["role"]})
     return {"access_token": token, "token_type": "bearer", "user": user}
 
@@ -506,8 +560,9 @@ def evaluate_auction(payload: AuctionEvaluateRequest, user: Dict[str, Any] = Dep
         supply = db.execute("SELECT * FROM supply_paths WHERE id=?", (payload.supply_path_id,)).fetchone()
     if not line or not factors or not supply:
         raise HTTPException(404, "Line item, bid factors, or supply path not found")
+    line, factors, supply = dict(line), dict(factors), dict(supply)
     scored = _score_impression(
-        dict(factors), dict(line),
+        factors, line,
         audience_quality=payload.audience_quality, supply_quality=payload.supply_quality, outcome_signal=payload.outcome_signal,
         contextual_relevance=payload.contextual_relevance, working_media_ratio=payload.working_media_ratio, data_cost_ratio=payload.data_cost_ratio,
         frequency_seen_today=payload.frequency_seen_today, floor_cpm=payload.floor_cpm, supply_status=supply["status"],
@@ -535,45 +590,81 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
     if not supply_rows:
         raise HTTPException(400, "No supply paths configured")
     factors_d, line_d = dict(factors), dict(line)
+
+    # Pacing budget for this simulation window, and a modeled user pool so we can
+    # enforce real per-user frequency caps across the request stream.
+    sim_budget = round(payload.requests * line_d["max_bid_cpm"] / 1000 * 0.45, 2)
+    user_pool = max(50, payload.requests // 5)
+    freq_seen: Dict[int, int] = {}
+
     tally = {"bid": 0, "throttle": 0, "no_bid": 0, "blocked": 0}
-    wins, spend_cpm, clearing_sum, score_sum = 0, 0.0, 0.0, 0.0
+    wins, spend_cpm, clearing_sum, second_price_sum, score_sum = 0, 0.0, 0.0, 0.0, 0.0
+    frequency_capped, pace_throttled = 0, 0
     by_partner: Dict[str, Dict[str, Any]] = {}
-    for _ in range(payload.requests):
+
+    for i in range(payload.requests):
         supply = rng.choice(supply_rows)
+        uid = rng.randrange(user_pool)
+        seen = freq_seen.get(uid, 0)
         contains_phi = rng.random() < payload.phi_leak_rate
         scored = _score_impression(
             factors_d, line_d,
             audience_quality=rng.uniform(55, 98), supply_quality=supply["outcome_score"], outcome_signal=rng.uniform(45, 95),
             contextual_relevance=rng.uniform(50, 95), working_media_ratio=supply["working_media_ratio"], data_cost_ratio=rng.uniform(0.1, 0.5),
-            frequency_seen_today=rng.randint(0, line_d["frequency_cap"] + 1), floor_cpm=supply["bid_floor_cpm"], supply_status=supply["status"],
+            frequency_seen_today=seen, floor_cpm=supply["bid_floor_cpm"], supply_status=supply["status"],
             contains_phi=contains_phi, creative_approved=True, geo_allowed=rng.random() > 0.02, consent_ok=rng.random() > 0.03,
         )
-        tally[scored["decision"]] += 1
         score_sum += scored["weighted_score"]
         partner = by_partner.setdefault(supply["partner"], {"requests": 0, "wins": 0, "spend_cpm": 0.0})
         partner["requests"] += 1
+
+        if seen >= line_d["frequency_cap"] and scored["decision"] in {"bid", "throttle"}:
+            frequency_capped += 1
+
+        # Pacing control: if cumulative spend is ahead of a linear pacing target,
+        # throttle eligible impressions to protect the flight from front-loading.
+        progress = (i + 1) / payload.requests
+        ahead_of_pace = sim_budget > 0 and (spend_cpm / 1000) > sim_budget * progress * 1.05
+        if ahead_of_pace and scored["decision"] in {"bid", "throttle"}:
+            pace_throttled += 1
+            tally["throttle"] += 1
+            continue
+
+        tally[scored["decision"]] += 1
         if scored["decision"] in {"bid", "throttle"} and scored["clearing_price_cpm"]:
-            # Win when our shaded bid clears a randomized competing floor.
+            # Second-price auction: pay the strongest competitor's price (capped by our bid).
             competitor = supply["bid_floor_cpm"] * rng.uniform(0.7, 1.6)
             if scored["bid_cpm"] >= competitor:
+                clear_price = round(min(scored["bid_cpm"], max(supply["bid_floor_cpm"], competitor)), 2)
                 wins += 1
-                spend_cpm += scored["clearing_price_cpm"]
-                clearing_sum += scored["clearing_price_cpm"]
+                spend_cpm += clear_price
+                clearing_sum += clear_price
+                second_price_sum += competitor
+                freq_seen[uid] = seen + 1
                 partner["wins"] += 1
-                partner["spend_cpm"] += scored["clearing_price_cpm"]
+                partner["spend_cpm"] += clear_price
+
     bids = tally["bid"] + tally["throttle"]
-    impressions = wins
+    unique_reach = len(freq_seen)
+    total_imps = sum(freq_seen.values())
     spend = round(spend_cpm / 1000, 2)
     summary = {
         "requests": payload.requests,
         "decisions": tally,
         "bid_rate": round(bids / payload.requests, 4),
         "win_rate": round(wins / max(bids, 1), 4),
-        "impressions_won": impressions,
+        "impressions_won": wins,
         "avg_clearing_cpm": round(clearing_sum / max(wins, 1), 2),
+        "avg_second_price_cpm": round(second_price_sum / max(wins, 1), 2),
         "est_spend": spend,
+        "sim_budget": sim_budget,
+        "budget_utilization": round(spend / sim_budget, 4) if sim_budget else 0,
         "avg_weighted_score": round(score_sum / payload.requests, 1),
         "phi_blocked": tally["blocked"],
+        "frequency_capped": frequency_capped,
+        "pace_throttled": pace_throttled,
+        "unique_reach": unique_reach,
+        "avg_frequency": round(total_imps / max(unique_reach, 1), 2),
         "by_partner": [
             {"partner": p, "requests": v["requests"], "wins": v["wins"], "win_rate": round(v["wins"] / max(v["requests"], 1), 4), "est_spend": round(v["spend_cpm"] / 1000, 2)}
             for p, v in sorted(by_partner.items(), key=lambda kv: kv[1]["wins"], reverse=True)
@@ -613,7 +704,6 @@ def forecast_audience(payload: ForecastRequest, user: Dict[str, Any] = Depends(c
     aud = dict(aud)
     addressable = aud["reach"] * (aud["match_rate"] if aud["match_rate"] > 0 else 1.0)
     impressions = int(payload.budget / payload.cpm * 1000)
-    # Diminishing-returns reach curve: unique reach saturates against addressable pool.
     avg_freq_target = payload.frequency_cap
     raw_reach = impressions / max(avg_freq_target, 1)
     unique_reach = int(addressable * (1 - math.exp(-raw_reach / max(addressable, 1))))
@@ -668,7 +758,6 @@ def frequency_governance(user: Dict[str, Any] = Depends(current_user)) -> Dict[s
             "avg_cap": round(sum(caps) / len(caps), 1),
             "audiences": sorted(bucket["audiences"]),
         })
-    # Recommend a coordinated global cap so HCPs are not over-exposed across channels.
     total_cap_pressure = sum(r["avg_cap"] for r in rows)
     recommended_global_cap = max(3, min(12, round(total_cap_pressure)))
     overexposed = [r["channel"] for r in rows if r["max_cap"] > recommended_global_cap]
@@ -711,6 +800,7 @@ def review_creative(creative_id: str, payload: CreativeReview, user: Dict[str, A
         row = db.execute("SELECT * FROM creatives WHERE id=?", (creative_id,)).fetchone()
         if not row:
             raise HTTPException(404, "Creative not found")
+        row = dict(row)
         version = row["version"] + (1 if payload.decision == "changes_requested" else 0)
         new_status = "in_review" if payload.decision == "changes_requested" else status_map[payload.decision]
         db.execute("UPDATE creatives SET mlr_status=?, version=?, reviewer=?, review_notes=?, decided_at=? WHERE id=?", (new_status, version, user["email"], payload.notes, ts, creative_id))
@@ -820,7 +910,6 @@ def optimize_portfolio(user: Dict[str, Any] = Depends(current_user)) -> Dict[str
         campaigns = {c["id"]: dict(c) for c in db.execute("SELECT * FROM campaigns").fetchall()}
     if not lines:
         return {"recommendations": [], "total_budget": 0, "reallocated": 0}
-    # Efficiency proxy: outcome + working-media orientation minus data-cost exposure.
     scored = []
     for line in lines:
         f = factors.get(line["id"], BidFactors().model_dump())
@@ -857,7 +946,7 @@ def optimize_portfolio(user: Dict[str, Any] = Depends(current_user)) -> Dict[str
 def reporting_performance(days: int = Query(14, ge=1, le=90), user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     with conn() as db:
         campaigns = dicts(db.execute("SELECT * FROM campaigns").fetchall())
-        lines = dicts(db.execute("SELECT * FROM line_items WHERE campaign_id IN (SELECT id FROM campaigns)").fetchall())
+        lines = dicts(db.execute("SELECT * FROM line_items").fetchall())
     lines_by_campaign: Dict[str, List[Dict[str, Any]]] = {}
     for line in lines:
         lines_by_campaign.setdefault(line["campaign_id"], []).append(line)
@@ -966,6 +1055,7 @@ def overview(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
             "measurement_ready": sum(1 for p in plans if p["status"] == "ready"),
             "avg_working_media_ratio": avg_working_media,
         },
+        "storage_backend": STORAGE_BACKEND,
         "narrative": "Pharma Signal connects verified audience reach, MLR-gated creative, quality supply paths, and measurement power into one operating view — answering whether a media buy reached the right verified audience, through the right path, at the right cost, with enough power to prove business impact.",
     }
 

@@ -159,9 +159,16 @@ export type Bidstream = {
   win_rate: number;
   impressions_won: number;
   avg_clearing_cpm: number;
+  avg_second_price_cpm: number;
   est_spend: number;
+  sim_budget: number;
+  budget_utilization: number;
   avg_weighted_score: number;
   phi_blocked: number;
+  frequency_capped: number;
+  pace_throttled: number;
+  unique_reach: number;
+  avg_frequency: number;
   by_partner: { partner: string; requests: number; wins: number; win_rate: number; est_spend: number }[];
 };
 
