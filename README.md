@@ -1,8 +1,8 @@
 # Pharma Signal
 
-Pharma Signal is a pharma-native DSP command center prototype focused on the gap between media activation and business impact.
+Pharma Signal is a pharma-native enterprise DSP foundation focused on the gap between media activation and business impact.
 
-It is not positioned as a generic DSP clone. The product direction is to connect the pieces healthcare media teams usually stitch together manually:
+It is not positioned as a generic dashboard or DSP clone. The product direction is to connect the pieces healthcare media teams usually stitch together manually:
 
 - Campaign and line-item planning
 - HCP, DTC, contextual, behavioral, geography, and retargeting audience strategy
@@ -14,10 +14,18 @@ It is not positioned as a generic DSP clone. The product direction is to connect
 - GA4 and downstream engagement signals
 - Rx / script-lift style measurement planning
 - Compliance, audit, approvals, and no-PHI guardrails
+- Executive dashboard and board-level operating narrative
 
 ## What is included now
 
-This repository contains a Netlify-ready React + Vite application with a typed DSP simulation layer.
+This repository now contains a full-stack enterprise DSP build path:
+
+1. A Netlify-ready React + Vite frontend.
+2. The existing Emergent/Mongo backend with auth, seeded data, dashboard APIs, RTB simulation, CSV upload, live bid stream, AI recommendations, MLR/creative review, frequency intelligence, and vendor shares.
+3. A new enterprise API layer with CEO dashboard, board narrative, OpenRTB auction evaluation, portfolio optimizer, measurement plans, approvals, and audit.
+4. Warehouse schema and sample executive queries.
+5. Docker Compose stack for local enterprise development.
+6. GitHub Actions CI for frontend and enterprise backend smoke testing.
 
 ### Product experience
 
@@ -37,31 +45,84 @@ This repository contains a Netlify-ready React + Vite application with a typed D
 
 ### Engineering modules
 
-- `src/types.ts` — DSP domain types
+- `src/types.ts` — frontend DSP domain types
 - `src/data/dsp.ts` — modeled campaign, audience, supply, pacing, compliance, and integration data
 - `src/data/openRtbSamples.ts` — sample pharma OpenRTB auction requests
 - `src/lib/dspEngine.ts` — supply scoring, working-media ratio, bid decisioning, pacing, and measurement logic
 - `src/lib/openRtb.ts` — pharma-safe OpenRTB auction simulator and bid response builder
 - `src/lib/budgetOptimizer.ts` — portfolio budget recommendation engine
 - `src/lib/controlPlane.ts` — approval and audit-trail logic
-- `src/connectors/partnerAdapters.ts` — mocked GA4, SSP delivery, and outcome-measurement connectors
-- `docs/dsp-architecture.md` — production architecture blueprint
-- `docs/integration-roadmap.md` — phased build roadmap
-- `.env.example` — environment variable template for future live connectors
+- `src/api/enterpriseClient.ts` — frontend client for the enterprise API
+- `backend/server.py` — existing Mongo-backed DSP API
+- `backend/enterprise_server.py` — enterprise v2 DSP API surface
+- `backend/ENTERPRISE_README.md` — backend operating notes
+- `warehouse/schema.sql` — analytics warehouse schema
+- `warehouse/sample_queries.sql` — CEO / analytics queries
+- `infra/docker-compose.enterprise.yml` — full local enterprise stack
+- `docs/enterprise-ceo-blueprint.md` — CEO-level product and operating blueprint
+- `.env.example` — environment variable template
 
-## Local development
+## Local frontend development
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Production build
+## Production frontend build
 
 ```bash
 npm run build
 npm run preview
 ```
+
+## Run the existing Mongo backend
+
+```bash
+cd backend
+uvicorn server:app --reload --port 8001
+```
+
+## Run the enterprise backend
+
+```bash
+cd backend
+uvicorn enterprise_server:app --reload --port 8080
+```
+
+Useful enterprise endpoints:
+
+- `GET /health`
+- `GET /api/v2/executive-dashboard`
+- `GET /api/v2/board/narrative`
+- `GET /api/v2/campaigns`
+- `GET /api/v2/supply-paths`
+- `POST /api/v2/auction/evaluate`
+- `GET /api/v2/optimizer/portfolio`
+- `GET /api/v2/measurement/plans`
+- `POST /api/v2/approvals`
+- `POST /api/v2/approvals/decision`
+- `GET /api/v2/audit`
+
+Role is controlled by header for local development:
+
+```bash
+curl -H "x-pharma-role: ceo" http://localhost:8080/api/v2/executive-dashboard
+```
+
+## Run the local enterprise stack
+
+```bash
+docker compose -f infra/docker-compose.enterprise.yml up
+```
+
+This starts:
+
+- MongoDB
+- Redis
+- existing backend on `8001`
+- enterprise API on `8080`
+- frontend on `5173`
 
 ## Netlify deployment
 
@@ -81,21 +142,22 @@ The `netlify.toml` file is already included.
 - Mock connectors
 - Pharma-specific product narrative
 
-### Phase 2: Data ingestion
+### Phase 2: Enterprise control plane
+
+- FastAPI campaign and line-item API
+- Auth and RBAC
+- Approvals
+- Audit logs
+- Client/vendor permission layers
+
+### Phase 3: Data ingestion
 
 - CSV/XLSX upload for campaign delivery
 - GA4 Data API connector
 - SSP delivery imports
 - Audience metadata validation
 - Partner deal QA module
-
-### Phase 3: Backend control plane
-
-- FastAPI or Node API
-- PostgreSQL campaign configuration
-- Auth and RBAC
-- Audit logs
-- Approval workflow
+- Verification feed imports
 
 ### Phase 4: OpenRTB bidder
 
