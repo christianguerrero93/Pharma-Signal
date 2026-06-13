@@ -1,0 +1,53 @@
+name: Deploy
+
+# Auto-deploy after CI passes on main. This triggers Render (backend) and
+# Netlify (frontend) via their deploy/build hooks — but only once the
+# "Pharma Signal CI" workflow has completed successfully, so a red build never
+# ships. Each step is a no-op until you add the matching repo secret, so the
+# workflow stays green before you've wired the hooks up.
+#
+# Setup:
+#   1. Render:  service > Settings > Deploy Hook  -> copy URL
+#      GitHub > repo Settings > Secrets and variables > Actions > New secret
+#        name: RENDER_DEPLOY_HOOK_URL
+#   2. Netlify: Site configuration > Build & deploy > Build hooks > Add build hook
+#      GitHub secret name: NETLIFY_BUILD_HOOK_URL
+#   3. (Recommended) Turn OFF auto-deploy in Render and Netlify so this
+#      CI-gated workflow is the single source of truth for deploys.
+
+on:
+  workflow_run:
+    workflows: ["Pharma Signal CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    name: Deploy backend + frontend
+    runs-on: ubuntu-latest
+    # Only deploy when the upstream CI run succeeded (manual runs always proceed).
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    env:
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      NETLIFY_BUILD_HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK_URL }}
+    steps:
+      - name: Trigger Render backend deploy
+        if: ${{ env.RENDER_DEPLOY_HOOK_URL != '' }}
+        run: |
+          echo "Triggering Render deploy..."
+          curl -fsSL -X POST "$RENDER_DEPLOY_HOOK_URL" && echo "Render deploy triggered."
+
+      - name: Trigger Netlify frontend build
+        if: ${{ env.NETLIFY_BUILD_HOOK_URL != '' }}
+        run: |
+          echo "Triggering Netlify build..."
+          curl -fsSL -X POST -d '{}' "$NETLIFY_BUILD_HOOK_URL" && echo "Netlify build triggered."
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deploy triggers";
+            if [ -n "$RENDER_DEPLOY_HOOK_URL" ]; then echo "- ✅ Render backend deploy triggered"; else echo "- ⏭️ Render skipped (set RENDER_DEPLOY_HOOK_URL secret)"; fi
+            if [ -n "$NETLIFY_BUILD_HOOK_URL" ]; then echo "- ✅ Netlify frontend build triggered"; else echo "- ⏭️ Netlify skipped (set NETLIFY_BUILD_HOOK_URL secret)"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
