@@ -1,0 +1,7 @@
+# Lean runtime dependencies for the Full DSP API (backend/full_dsp_server.py).
+# The full backend/requirements.txt pins emergentintegrations and a Mongo/pandas
+# stack that the Full DSP service does not use and that is not installable from
+# public PyPI. The Full DSP server only needs FastAPI + an ASGI server.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4

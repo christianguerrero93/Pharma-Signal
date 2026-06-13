@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+tests/
+ENTERPRISE_README.md
+requirements.txt
+server.py
+enterprise_server.py

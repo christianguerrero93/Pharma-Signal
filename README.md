@@ -189,12 +189,31 @@ This starts:
 - enterprise API on `8080`
 - frontend on `5173`
 
-## Netlify deployment
+## Deployment (full stack)
+
+See **[`docs/deployment.md`](docs/deployment.md)** for the complete guide. In short:
+
+1. **Deploy the backend** (`backend/full_dsp_server.py`) as a container — a
+   `backend/Dockerfile` and a Render `render.yaml` blueprint are included. It binds
+   to `$PORT`, health-checks at `/health`, and persists SQLite at `FULL_DSP_DB`
+   (mount a disk/volume there).
+2. **Deploy the frontend** to Netlify (build `npm run build`, publish `dist`; the
+   `netlify.toml` is already configured) and set the build env var
+   `VITE_FULL_DSP_API_URL` to your deployed backend URL so the Command OS can reach it.
+
+```bash
+# build and run the backend container locally
+docker build -t pharma-signal-api ./backend
+docker run -p 8090:8090 -e PORT=8090 -v pharma_signal_data:/data pharma-signal-api
+```
+
+### Netlify (frontend)
 
 Connect this repository to Netlify and use:
 
 - Build command: `npm run build`
 - Publish directory: `dist`
+- Environment variable: `VITE_FULL_DSP_API_URL=https://<your-backend-host>`
 
 The `netlify.toml` file is already included.
 
