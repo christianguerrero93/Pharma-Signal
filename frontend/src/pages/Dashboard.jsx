@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, fmtMoney, fmtPct, fmtNum } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 import MetricCard from "@/components/MetricCard";
 import {
-  DollarSign, Target, Gauge, TrendingUp, Activity, Building2, Layers, Megaphone,
+  DollarSign, Target, Gauge, TrendingUp, Activity, Building2, Layers, Megaphone, X, Filter,
 } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, BarChart, Bar, Legend,
@@ -11,10 +12,26 @@ import {
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
-  useEffect(() => { api.get("/dashboard/overview").then(r => setData(r.data)); }, []);
+  const [filters, setFilters] = useState({ brand: "", indication: "", campaign_type: "" });
+  const nav = useNavigate();
+
+  const queryString = useMemo(() => {
+    const p = new URLSearchParams();
+    Object.entries(filters).forEach(([k, v]) => { if (v) p.append(k, v); });
+    return p.toString();
+  }, [filters]);
+
+  useEffect(() => {
+    api.get(`/dashboard/overview?${queryString}`).then(r => setData(r.data));
+  }, [queryString]);
 
   if (!data) return <div className="text-slate-500" data-testid="loading">Loading control room…</div>;
   const k = data.kpis;
+  const fo = data.filter_options;
+
+  const setFilter = (key, value) => setFilters(f => ({ ...f, [key]: f[key] === value ? "" : value }));
+  const clearAll = () => setFilters({ brand: "", indication: "", campaign_type: "" });
+  const hasFilter = Object.values(filters).some(Boolean);
 
   return (
     <div data-testid="dashboard-page">
@@ -23,6 +40,39 @@ export default function Dashboard() {
         title="Outcome over Impressions"
         description="Real-time view of working media, verified reach, supply quality, and Rx outcomes across your pharma portfolio."
       />
+
+      {/* Filter bar */}
+      <div className="bg-white border border-slate-200 rounded-md p-4 mb-6 flex flex-wrap items-center gap-3" data-testid="dashboard-filters">
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.12em] font-semibold text-slate-500">
+          <Filter className="h-3.5 w-3.5" /> Filters
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {fo.campaign_types.map(t => (
+            <button key={t} data-testid={`filter-type-${t}`}
+              onClick={() => setFilter("campaign_type", t)}
+              className={`text-xs px-2.5 py-1 rounded-md border transition-colors ${filters.campaign_type === t ? "bg-blue-900 text-white border-blue-900" : "bg-white text-slate-700 border-slate-200 hover:border-slate-300"}`}>
+              {t}
+            </button>
+          ))}
+        </div>
+        <span className="text-slate-200">|</span>
+        <select data-testid="filter-brand" value={filters.brand} onChange={(e) => setFilters(f => ({ ...f, brand: e.target.value }))}
+          className="text-xs border border-slate-200 rounded-md px-2 py-1 bg-white">
+          <option value="">All brands</option>
+          {fo.brands.map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select data-testid="filter-indication" value={filters.indication} onChange={(e) => setFilters(f => ({ ...f, indication: e.target.value }))}
+          className="text-xs border border-slate-200 rounded-md px-2 py-1 bg-white">
+          <option value="">All indications</option>
+          {fo.indications.map(i => <option key={i} value={i}>{i}</option>)}
+        </select>
+        {hasFilter && (
+          <button onClick={clearAll} data-testid="filter-clear"
+            className="text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1 ml-auto">
+            <X className="h-3.5 w-3.5" /> Clear
+          </button>
+        )}
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
         <MetricCard testid="kpi-budget" label="Total Budget" value={fmtMoney(k.total_budget)}
@@ -35,8 +85,8 @@ export default function Dashboard() {
           sub="exposed vs control" delta="+0.6 pts" deltaType="good" icon={TrendingUp} />
         <MetricCard testid="kpi-supply-score" label="Avg Supply Score" value={`${k.avg_supply_score}/100`}
           sub="outcome-adjusted" icon={Layers} />
-        <MetricCard testid="kpi-campaigns" label="Active Campaigns" value={`${k.active_campaigns}`}
-          sub={`of ${k.total_campaigns} total`} icon={Megaphone} />
+        <MetricCard testid="kpi-campaigns" label="Campaigns" value={`${k.active_campaigns}/${k.total_campaigns}`}
+          sub="active / total in view" icon={Megaphone} />
         <MetricCard testid="kpi-cpqo" label="Cost / Quality Outcome" value={fmtMoney(k.cost_per_quality_outcome)}
           sub="quality visit basis" icon={Activity} />
         <MetricCard testid="kpi-active-vendors" label="Top Vendors" value={data.top_pmps.length}
@@ -87,7 +137,7 @@ export default function Dashboard() {
             <div className="text-[10px] uppercase tracking-[0.15em] font-semibold text-indigo-700">AI Strategist · Claude Sonnet 4.5</div>
             <p className="text-sm text-slate-800 mt-1 leading-relaxed">
               <span className="font-medium">{data.top_pmps[0]?.vendor}</span> is currently your strongest awareness driver — scaling with above-benchmark engagement quality and the lowest data-cost drag in your portfolio.
-              Visit <a href="/ai" className="text-indigo-700 underline">AI Recommendations</a> for the full next-best-action briefing.
+              Visit <button onClick={() => nav("/ai")} className="text-indigo-700 underline">AI Recommendations</button> for the full next-best-action briefing.
             </p>
           </div>
         </div>

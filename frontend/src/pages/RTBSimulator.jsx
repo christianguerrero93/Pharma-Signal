@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
-import { Zap, Play } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Zap, Play, Save, Trash2, RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine,
 } from "recharts";
@@ -18,20 +20,31 @@ const Param = ({ label, value, onChange, min = 0, max = 1, step = 0.01, suffix =
   </div>
 );
 
+const decisionColor = (d) =>
+  d === "BID" ? "text-emerald-700" : d === "LOW_BID" ? "text-amber-700" : "text-red-600";
+
+const DEFAULTS = {
+  outcome_probability: 0.65,
+  audience_quality_score: 0.78,
+  supply_quality_score: 0.72,
+  rx_lift_weight: 1.2,
+  engagement_quality: 0.68,
+  data_cost_multiplier: 1.25,
+  base_value: 12,
+};
+
 export default function RTBSimulator() {
-  const [params, setParams] = useState({
-    outcome_probability: 0.65,
-    audience_quality_score: 0.78,
-    supply_quality_score: 0.72,
-    rx_lift_weight: 1.2,
-    engagement_quality: 0.68,
-    data_cost_multiplier: 1.25,
-    base_value: 12,
-  });
+  const [params, setParams] = useState(DEFAULTS);
   const [result, setResult] = useState(null);
   const [running, setRunning] = useState(false);
+  const [scenarios, setScenarios] = useState([]);
+  const [scenarioName, setScenarioName] = useState("");
 
   const upd = (k, v) => setParams(p => ({ ...p, [k]: v }));
+  const reset = () => { setParams(DEFAULTS); setResult(null); };
+
+  const loadScenarios = () => api.get("/scenarios").then(r => setScenarios(r.data));
+  useEffect(() => { loadScenarios(); }, []);
 
   const run = async () => {
     setRunning(true);
@@ -41,12 +54,38 @@ export default function RTBSimulator() {
     } finally { setRunning(false); }
   };
 
+  const save = async () => {
+    if (!result) { toast.error("Run a simulation first"); return; }
+    if (!scenarioName.trim()) { toast.error("Name your scenario"); return; }
+    await api.post("/scenarios", { name: scenarioName.trim(), params, result });
+    toast.success("Scenario saved");
+    setScenarioName("");
+    loadScenarios();
+  };
+
+  const loadScenario = (s) => {
+    setParams(s.params);
+    setResult(s.result);
+    toast.success(`Loaded "${s.name}"`);
+  };
+
+  const removeScenario = async (id, e) => {
+    e.stopPropagation();
+    await api.delete(`/scenarios/${id}`);
+    loadScenarios();
+  };
+
   return (
     <div data-testid="rtb-simulator-page">
       <PageHeader
         kicker="Bidder Logic"
         title="RTB Bid Simulator"
-        description="Tune the parameters of the outcome-aware bidder and visualize bid decisions, win rate, and final CPM."
+        description="Tune the parameters of the outcome-aware bidder. Save scenarios to compare aggressive vs. conservative strategies side-by-side."
+        actions={
+          <Button onClick={reset} variant="outline" size="sm" className="gap-1.5" data-testid="rtb-reset">
+            <RotateCcw className="h-3.5 w-3.5" /> Reset
+          </Button>
+        }
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
@@ -86,9 +125,7 @@ export default function RTBSimulator() {
                 </div>
                 <div className="bg-white border border-slate-200 rounded-md p-4" data-testid="result-decision">
                   <div className="text-[10px] uppercase tracking-[0.12em] font-semibold text-slate-500">Decision</div>
-                  <div className={`metric-num text-2xl mt-2 ${result.decision === "BID" ? "text-emerald-700" : result.decision === "LOW_BID" ? "text-amber-700" : "text-red-600"}`}>
-                    {result.decision}
-                  </div>
+                  <div className={`metric-num text-2xl mt-2 ${decisionColor(result.decision)}`}>{result.decision}</div>
                 </div>
                 <div className="bg-white border border-slate-200 rounded-md p-4" data-testid="result-winrate">
                   <div className="text-[10px] uppercase tracking-[0.12em] font-semibold text-slate-500">Win Rate</div>
@@ -98,7 +135,7 @@ export default function RTBSimulator() {
 
               <div className="bg-white border border-slate-200 rounded-md p-5" data-testid="result-chart">
                 <h3 className="font-heading font-semibold text-slate-900 mb-3">Simulated Bid Stream (24 requests)</h3>
-                <ResponsiveContainer width="100%" height={240}>
+                <ResponsiveContainer width="100%" height={220}>
                   <LineChart data={result.stream}>
                     <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" vertical={false} />
                     <XAxis dataKey="t" tick={{ fontSize: 11, fill: "#64748b" }} />
@@ -110,6 +147,15 @@ export default function RTBSimulator() {
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+
+              {/* Save scenario */}
+              <div className="bg-white border border-slate-200 rounded-md p-4 flex items-center gap-2" data-testid="save-scenario-row">
+                <Input data-testid="scenario-name" placeholder="Name this scenario (e.g. Aggressive HCP)"
+                  value={scenarioName} onChange={(e) => setScenarioName(e.target.value)} className="flex-1" />
+                <Button onClick={save} className="bg-blue-900 hover:bg-blue-950 gap-1.5" data-testid="save-scenario">
+                  <Save className="h-4 w-4" /> Save Scenario
+                </Button>
+              </div>
             </>
           )}
 
@@ -120,6 +166,50 @@ export default function RTBSimulator() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Saved scenarios comparison */}
+      <div className="bg-white border border-slate-200 rounded-md p-5" data-testid="scenarios-list">
+        <h3 className="font-heading font-semibold text-slate-900 mb-3">Saved Scenarios ({scenarios.length})</h3>
+        {scenarios.length === 0 ? (
+          <div className="text-sm text-slate-500">No scenarios saved yet. Run a simulation, name it, and click Save Scenario to compare strategies.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-slate-200">
+                <tr className="text-[10px] uppercase tracking-[0.1em] text-slate-500">
+                  <th className="text-left font-semibold py-2">Scenario</th>
+                  <th className="text-right font-semibold py-2">Bid CPM</th>
+                  <th className="text-center font-semibold py-2">Decision</th>
+                  <th className="text-right font-semibold py-2">Win Rate</th>
+                  <th className="text-right font-semibold py-2">Audience Q</th>
+                  <th className="text-right font-semibold py-2">Supply Q</th>
+                  <th className="text-right font-semibold py-2">Data Cost</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {scenarios.map(s => (
+                  <tr key={s.id} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors"
+                    onClick={() => loadScenario(s)} data-testid={`scenario-${s.id}`}>
+                    <td className="py-2 font-medium text-slate-900">{s.name}</td>
+                    <td className="py-2 text-right mono-num">${s.result.final_bid_cpm}</td>
+                    <td className={`py-2 text-center font-mono font-semibold ${decisionColor(s.result.decision)}`}>{s.result.decision}</td>
+                    <td className="py-2 text-right mono-num">{s.result.win_rate_pct}%</td>
+                    <td className="py-2 text-right mono-num">{(s.params.audience_quality_score || 0).toFixed(2)}</td>
+                    <td className="py-2 text-right mono-num">{(s.params.supply_quality_score || 0).toFixed(2)}</td>
+                    <td className="py-2 text-right mono-num">{(s.params.data_cost_multiplier || 0).toFixed(2)}</td>
+                    <td className="py-2 text-right">
+                      <button onClick={(e) => removeScenario(s.id, e)} className="text-slate-400 hover:text-red-600" data-testid={`del-scenario-${s.id}`}>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 2 testing of PharmaSignal DSP new features: dashboard filters, campaign drill-down + PATCH links, RTB scenarios CRUD, MLR creatives, live bid stream (SSE), vendor PDF export. Backend: 26/26 pytest tests pass (including 12 new tests for new endpoints + regression). Frontend: 7/7 critical UI flows pass (dashboard HCP pill drops campaign count 7->3, campaign row drill-down loads detail page with linked-audiences/PMPs/creatives cards, edit-links dialog opens, RTB simulate->save scenario->reload->delete cycle works, MLR Pending/Approved/Rejected tabs with approve button visible, live-start streams >=24 events in 3.5s, vendor 'Export PDF' renders [data-testid='print-scorecard'] and calls window.print). Regression: all existing routes (/audiences /pmp /data-cost /ga4 /script-lift /ai /upload /vendors) still render. The iteration-1 CSV upload bug is verified FIXED: invalid-schema upload (vendor,score -> pmps) now returns HTTP 400 instead of corrupting the collection; valid script_lift schema upload still inserts.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/ai/recommendations",
+        "issue": "Carry-over from iter1: LLM stream errors are swallowed inside the generator and yielded as plain text on HTTP 200 (e.g. '[AI recommendation engine unavailable: ...]'). Frontend can't distinguish a failed LLM call from a real one. Not blocking."
+      },
+      {
+        "endpoint": "PATCH /api/creatives/{id}",
+        "issue": "Body is a free-form Dict[str, Any] rather than a Pydantic model. mlr_status is not validated against the enum {Approved,Pending,Rejected}; any string passes."
+      },
+      {
+        "endpoint": "GET /api/live/bid-stream",
+        "issue": "No cancel/throttle protection; if a client opens multiple tabs each spawns 40 sleeping coroutines for ~6s. Fine for demo, but worth a connection cap in prod."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Edit Links dialog on /campaigns/:id", "issues": ["Radix DialogContent missing aria-describedby / Description — a11y warning in console. Not user-visible but flagged by axe/Radix."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pharmasignal.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(minor) Validate PATCH /api/creatives mlr_status against {Approved,Pending,Rejected} via a Pydantic model and 400 on bad values.",
+    "(minor) Add aria-describedby or <DialogDescription> to the Link Audiences & PMPs dialog on CampaignDetail page to silence the Radix a11y warning.",
+    "(carry-over) Return non-200 / typed error from /api/ai/recommendations on LLM failure so the UI can render an error state."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 898 lines — getting close to the 700 split threshold; consider splitting into routers (campaigns.py, scenarios.py, creatives.py, live.py, upload.py, ai.py) for maintainability.",
+    "Seed includes id-bearing dicts inserted directly (good — _id excluded everywhere on reads). All endpoints correctly use {'_id': 0}.",
+    "Upload validator is row-level and column-level — schema bug from iter1 is properly fixed and covered by test_upload_pmps_invalid_schema_rejected + test_upload_valid_script_lift.",
+    "PATCH /campaigns/{id} accepts None-safe partial updates via CampaignLinkUpdate — good pattern.",
+    "Live bid-stream emits proper SSE (data: {...} blank-line) and a [DONE] sentinel — frontend parses it correctly.",
+    "CampaignDetail performance object computes avg cleanly with division-by-zero guard (when no pmps linked)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pharmasignal.py (extended +12 tests: dashboard filters, campaign detail, PATCH links, scenarios CRUD, creatives CRUD/patch, live stream, schema-validated upload)"
+  ],
+  "success_rate": {"backend": "100% (26/26 pytest)", "frontend": "100% (7/7 critical flows incl. dashboard filter, drill-down, scenarios CRUD, MLR tabs, live stream, vendor PDF, regression nav)"},
+  "test_credentials": "N/A — open-access MVP, no auth",
+  "seed_data_creation": "Backend auto-seed (ensure_seed) is idempotent. Seeded campaigns now include linked audience_ids + pmp_ids and ~14-20 creatives across MLR statuses, as verified by test_get_campaign_detail and test_list_creatives_seeded.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All new endpoints from this iteration (dashboard filters, /campaigns/{id} GET+PATCH, /scenarios CRUD, /creatives GET/POST/PATCH, /live/bid-stream) are covered by pytest in /app/backend/tests/test_pharmasignal.py. CSV-upload bug from iter1 is fixed and regression-tested. If you change PATCH /campaigns semantics, note that TestCampaignDetail.test_patch_campaign_links mutates the first seeded campaign's links — re-run after a fresh /api/admin/reseed if needed.",
+  "rca of the issue": "No new bugs found in this iteration. Iteration-1's CSV upload corruption RCA is fully mitigated: server.py now defines DATASET_REQUIRED_COLUMNS, validates header columns (400 on missing), coerces numerics, rejects rows with missing required values, and 400s if all rows rejected. Verified by test_upload_pmps_invalid_schema_rejected (vendor,score -> 400) and test_upload_valid_script_lift (4 valid columns -> 200, rows_inserted=2)."
+}

@@ -6,7 +6,7 @@ A pharma-native demand-side platform with intelligence layer:
 - RTB bid simulator
 - AI-powered next-best-action recommendations via Claude Sonnet 4.5
 """
-from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -64,6 +64,8 @@ class Campaign(BaseModel):
     mlr_status: str = "Approved"
     frequency_cap: int = 5
     channels: List[str] = Field(default_factory=list)
+    audience_ids: List[str] = Field(default_factory=list)
+    pmp_ids: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -82,6 +84,14 @@ class CampaignCreate(BaseModel):
     outcome_kpi: str = "Script Lift"
     frequency_cap: int = 5
     channels: List[str] = Field(default_factory=list)
+    audience_ids: List[str] = Field(default_factory=list)
+    pmp_ids: List[str] = Field(default_factory=list)
+
+
+class CampaignLinkUpdate(BaseModel):
+    audience_ids: Optional[List[str]] = None
+    pmp_ids: Optional[List[str]] = None
+    status: Optional[str] = None
 
 
 class RTBSimulateRequest(BaseModel):
@@ -92,6 +102,23 @@ class RTBSimulateRequest(BaseModel):
     engagement_quality: float = 0.65
     data_cost_multiplier: float = 1.3
     base_value: float = 12.0  # base CPM willingness
+
+
+class ScenarioCreate(BaseModel):
+    name: str
+    params: Dict[str, Any]
+    result: Dict[str, Any]
+
+
+class CreativeCreate(BaseModel):
+    campaign_id: Optional[str] = None
+    brand: str
+    indication: str
+    asset_name: str
+    format: str  # 300x250, OLV-15s, CTV-30s, etc.
+    claims: str = ""
+    fair_balance: bool = True
+    reviewer_notes: str = ""
 
 
 # ============== SEED DATA ==============
@@ -318,6 +345,32 @@ async def ensure_seed():
     data_cost = seed_data_cost()
     vendors = seed_vendors()
 
+    # Link 2-4 audiences and 2-3 PMPs to each campaign
+    for c in campaigns:
+        same_type_aud = [a for a in audiences if a["type"] == c["campaign_type"]]
+        c["audience_ids"] = [a["id"] for a in random.sample(same_type_aud, min(3, len(same_type_aud)))]
+        c["pmp_ids"] = [p["id"] for p in random.sample(pmps, k=min(3, len(pmps)))]
+
+    # Sample creatives per campaign
+    creatives = []
+    formats = ["300x250", "728x90", "OLV-15s", "CTV-30s", "Native-card"]
+    for c in campaigns:
+        for fmt in random.sample(formats, k=random.randint(2, 4)):
+            creatives.append({
+                "id": str(uuid.uuid4()),
+                "campaign_id": c["id"],
+                "brand": c["brand"],
+                "indication": c["indication"],
+                "asset_name": f"{c['brand']} — {fmt}",
+                "format": fmt,
+                "claims": random.choice(["Reduce A1C by 1.4%", "FDA-approved Q4 2025", "Once-daily oral", "Proven efficacy"]),
+                "fair_balance": True,
+                "mlr_status": random.choice(["Approved", "Approved", "Pending", "Rejected"]),
+                "reviewer_notes": "",
+                "created_at": now_iso(),
+                "reviewed_at": now_iso(),
+            })
+
     await db.campaigns.delete_many({})
     if campaigns:
         await db.campaigns.insert_many(campaigns)
@@ -339,6 +392,10 @@ async def ensure_seed():
     await db.vendors.delete_many({})
     if vendors:
         await db.vendors.insert_many(vendors)
+    await db.creatives.delete_many({})
+    if creatives:
+        await db.creatives.insert_many(creatives)
+    await db.scenarios.delete_many({})
 
     await db.seed_meta.insert_one({"_id": SEED_DOC_ID, "seeded_at": now_iso()})
     logger.info("Seed complete.")
@@ -358,14 +415,27 @@ async def root():
 
 
 @api_router.get("/dashboard/overview")
-async def dashboard_overview():
-    campaigns = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
+async def dashboard_overview(
+    brand: Optional[str] = Query(None),
+    indication: Optional[str] = Query(None),
+    campaign_type: Optional[str] = Query(None),
+):
+    q = {}
+    if brand: q["brand"] = brand
+    if indication: q["indication"] = indication
+    if campaign_type: q["campaign_type"] = campaign_type
+    campaigns = await db.campaigns.find(q, {"_id": 0}).to_list(1000)
     all_pmps = await db.pmps.find({}, {"_id": 0}).to_list(1000)
     data_cost = await db.data_cost.find({}, {"_id": 0}).to_list(1000)
     script_lift = await db.script_lift.find({}, {"_id": 0}).to_list(1000)
 
-    # Filter to only rows that match the expected pmp schema (defensive)
-    pmps = [p for p in all_pmps if "outcome_adjusted_score" in p and "verified_reach" in p]
+    # If filtering by campaign, narrow PMPs to those linked to filtered campaigns
+    linked_pmp_ids = set()
+    for c in campaigns:
+        linked_pmp_ids.update(c.get("pmp_ids", []) or [])
+
+    pmps_valid = [p for p in all_pmps if "outcome_adjusted_score" in p and "verified_reach" in p]
+    pmps = [p for p in pmps_valid if p.get("id") in linked_pmp_ids] if (q and linked_pmp_ids) else pmps_valid
 
     total_budget = sum(c.get("budget", 0) for c in campaigns)
     total_spent = sum(c.get("spent", 0) for c in campaigns)
@@ -381,6 +451,8 @@ async def dashboard_overview():
 
     pmps_sorted = sorted(pmps, key=lambda p: p.get("outcome_adjusted_score", 0), reverse=True)
 
+    # Build filter options from all campaigns
+    all_camps = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
     return {
         "kpis": {
             "total_budget": total_budget,
@@ -396,13 +468,73 @@ async def dashboard_overview():
         "script_lift_series": script_lift,
         "top_pmps": pmps_sorted[:5],
         "channels": [d.get("channel") for d in data_cost if d.get("channel")],
+        "filter_options": {
+            "brands": sorted({c.get("brand") for c in all_camps if c.get("brand")}),
+            "indications": sorted({c.get("indication") for c in all_camps if c.get("indication")}),
+            "campaign_types": sorted({c.get("campaign_type") for c in all_camps if c.get("campaign_type")}),
+        },
+        "active_filters": {"brand": brand, "indication": indication, "campaign_type": campaign_type},
     }
 
 
 @api_router.get("/campaigns")
-async def list_campaigns():
-    docs = await db.campaigns.find({}, {"_id": 0}).to_list(1000)
+async def list_campaigns(
+    brand: Optional[str] = Query(None),
+    indication: Optional[str] = Query(None),
+    campaign_type: Optional[str] = Query(None),
+):
+    q = {}
+    if brand: q["brand"] = brand
+    if indication: q["indication"] = indication
+    if campaign_type: q["campaign_type"] = campaign_type
+    docs = await db.campaigns.find(q, {"_id": 0}).to_list(1000)
     return docs
+
+
+@api_router.get("/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: str):
+    c = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Campaign not found")
+    # Linked audiences and pmps
+    aud_ids = c.get("audience_ids") or []
+    pmp_ids = c.get("pmp_ids") or []
+    audiences = await db.audiences.find({"id": {"$in": aud_ids}}, {"_id": 0}).to_list(100) if aud_ids else []
+    pmps = await db.pmps.find({"id": {"$in": pmp_ids}}, {"_id": 0}).to_list(100) if pmp_ids else []
+    # Performance synthesized from linked PMPs
+    if pmps:
+        avg_score = round(sum(p.get("outcome_adjusted_score", 0) for p in pmps) / len(pmps), 1)
+        total_impressions = sum(p.get("impressions", 0) for p in pmps)
+        avg_lift = round(sum(p.get("script_lift_pct", 0) for p in pmps) / len(pmps), 2)
+        avg_wm = round(sum(p.get("working_media_efficiency", 0) for p in pmps) / len(pmps) * 100, 1)
+    else:
+        avg_score = avg_lift = avg_wm = 0
+        total_impressions = 0
+    creatives = await db.creatives.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(100)
+    return {
+        "campaign": c,
+        "audiences": audiences,
+        "pmps": pmps,
+        "creatives": creatives,
+        "performance": {
+            "avg_supply_score": avg_score,
+            "total_impressions": total_impressions,
+            "avg_script_lift_pct": avg_lift,
+            "avg_working_media_pct": avg_wm,
+        },
+    }
+
+
+@api_router.patch("/campaigns/{campaign_id}")
+async def update_campaign(campaign_id: str, payload: CampaignLinkUpdate):
+    upd = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not upd:
+        raise HTTPException(400, "No fields to update")
+    res = await db.campaigns.update_one({"id": campaign_id}, {"$set": upd})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Campaign not found")
+    c = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    return c
 
 
 @api_router.post("/campaigns")
@@ -421,7 +553,8 @@ async def list_audiences():
 @api_router.get("/pmps")
 async def list_pmps():
     docs = await db.pmps.find({}, {"_id": 0}).to_list(1000)
-    docs.sort(key=lambda p: p["outcome_adjusted_score"], reverse=True)
+    docs = [p for p in docs if "outcome_adjusted_score" in p]
+    docs.sort(key=lambda p: p.get("outcome_adjusted_score", 0), reverse=True)
     return docs
 
 
@@ -488,6 +621,118 @@ async def rtb_simulate(req: RTBSimulateRequest):
         "win_rate_pct": win_rate,
         "stream": sim,
     }
+
+
+# ============== SCENARIOS ==============
+@api_router.get("/scenarios")
+async def list_scenarios():
+    docs = await db.scenarios.find({}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return docs
+
+
+@api_router.post("/scenarios")
+async def create_scenario(payload: ScenarioCreate):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "name": payload.name,
+        "params": payload.params,
+        "result": payload.result,
+        "created_at": now_iso(),
+    }
+    await db.scenarios.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.delete("/scenarios/{scenario_id}")
+async def delete_scenario(scenario_id: str):
+    res = await db.scenarios.delete_one({"id": scenario_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Scenario not found")
+    return {"ok": True}
+
+
+# ============== MLR / CREATIVES ==============
+@api_router.get("/creatives")
+async def list_creatives(campaign_id: Optional[str] = Query(None)):
+    q = {"campaign_id": campaign_id} if campaign_id else {}
+    docs = await db.creatives.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return docs
+
+
+@api_router.post("/creatives")
+async def create_creative(payload: CreativeCreate):
+    doc = payload.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["mlr_status"] = "Pending"
+    doc["created_at"] = now_iso()
+    doc["reviewed_at"] = None
+    await db.creatives.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/creatives/{creative_id}")
+async def update_creative(creative_id: str, body: Dict[str, Any]):
+    allowed = {"mlr_status", "reviewer_notes"}
+    upd = {k: v for k, v in body.items() if k in allowed}
+    if "mlr_status" in upd:
+        upd["reviewed_at"] = now_iso()
+    if not upd:
+        raise HTTPException(400, "Nothing to update")
+    res = await db.creatives.update_one({"id": creative_id}, {"$set": upd})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Creative not found")
+    return await db.creatives.find_one({"id": creative_id}, {"_id": 0})
+
+
+# ============== LIVE BID STREAM (Simulated) ==============
+@api_router.get("/live/bid-stream")
+async def live_bid_stream():
+    """Server-sent simulated OpenRTB bid request stream.
+
+    In production this would consume real exchange feeds (PubMatic, Magnite, OpenX, etc.).
+    Here we simulate realistic bid requests with our outcome-aware bidder responding.
+    """
+    pmps_all = await db.pmps.find({}, {"_id": 0}).to_list(1000)
+    pmps = [p for p in pmps_all if "outcome_adjusted_score" in p]
+    audiences = await db.audiences.find({}, {"_id": 0}).to_list(100)
+
+    async def gen():
+        for i in range(40):
+            pmp = random.choice(pmps) if pmps else {"vendor": "PubMatic Health", "outcome_adjusted_score": 70,
+                                                     "working_media_efficiency": 0.8, "match_rate": 0.7}
+            aud = random.choice(audiences) if audiences else None
+            op = random.uniform(0.35, 0.92)
+            aq = (aud.get("audience_quality_score", 75) / 100) if aud else random.uniform(0.5, 0.9)
+            sq = pmp.get("outcome_adjusted_score", 70) / 100
+            eq = pmp.get("engagement_quality", random.uniform(0.4, 0.85))
+            rx = 1.0 + (pmp.get("script_lift_pct", 0) / 10)
+            dc = 1.0 + (pmp.get("data_cost_drag", 0.15) * 2)
+            bid = round(op * aq * sq * rx * eq / dc * 12, 4)
+            decision = "BID" if bid >= 1.5 else ("LOW_BID" if bid >= 0.5 else "NO_BID")
+            event = {
+                "t": i,
+                "ts": now_iso(),
+                "vendor": pmp.get("vendor"),
+                "deal_id": pmp.get("deal_id", "—"),
+                "audience": aud.get("name", "General") if aud else "General",
+                "audience_type": aud.get("type", "DTC") if aud else "DTC",
+                "channel": random.choice(["Display", "OLV", "CTV", "Native", "EHR/POC", "Audio"]),
+                "bid_cpm": bid,
+                "decision": decision,
+                "outcome_prob": round(op, 3),
+                "match_rate": round(pmp.get("match_rate", 0.7), 3),
+            }
+            yield f"data: {json.dumps(event)}\n\n"
+            import asyncio
+            await asyncio.sleep(0.15)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @api_router.post("/ai/recommendations")

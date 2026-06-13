@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api, fmtMoney, fmtPct } from "@/lib/api";
 import PageHeader from "@/components/PageHeader";
-import { Plus, ExternalLink } from "lucide-react";
+import { Plus, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 export default function Campaigns() {
   const [rows, setRows] = useState([]);
+  const nav = useNavigate();
   useEffect(() => { api.get("/campaigns").then(r => setRows(r.data)); }, []);
 
   return (
@@ -14,7 +15,7 @@ export default function Campaigns() {
       <PageHeader
         kicker="Activation"
         title="Campaigns"
-        description="Active and recent pharma campaigns across HCP and DTC strategies."
+        description="Active and recent pharma campaigns across HCP and DTC strategies. Click any row for full performance drill-down."
         actions={
           <Link to="/campaigns/new" data-testid="new-campaign-btn"
             className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-md bg-blue-900 text-white hover:bg-blue-950">
@@ -36,13 +37,16 @@ export default function Campaigns() {
                 <th className="text-right font-semibold py-2.5 px-3">Pacing</th>
                 <th className="text-left font-semibold py-2.5 px-3">KPI</th>
                 <th className="text-left font-semibold py-2.5 px-3">Status</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {rows.map((c) => {
                 const pacing = c.budget ? (c.spent / c.budget) * 100 : 0;
                 return (
-                  <tr key={c.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                  <tr key={c.id} onClick={() => nav(`/campaigns/${c.id}`)}
+                    data-testid={`campaign-row-${c.id}`}
+                    className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer transition-colors">
                     <td className="py-3 px-4">
                       <div className="font-medium text-slate-900">{c.name}</div>
                       <div className="text-xs text-slate-500 font-mono">{c.flight_start} → {c.flight_end}</div>
@@ -67,11 +71,12 @@ export default function Campaigns() {
                         {c.status}
                       </Badge>
                     </td>
+                    <td className="py-3 px-3 text-slate-400"><ChevronRight className="h-4 w-4" /></td>
                   </tr>
                 );
               })}
               {rows.length === 0 && (
-                <tr><td colSpan={8} className="text-center text-slate-500 py-8">No campaigns yet.</td></tr>
+                <tr><td colSpan={9} className="text-center text-slate-500 py-8">No campaigns yet.</td></tr>
               )}
             </tbody>
           </table>

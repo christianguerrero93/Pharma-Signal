@@ -1,12 +1,13 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Megaphone, Users, Network, Wallet,
-  Activity, TrendingUp, Zap, Sparkles, Building2, Upload, Plus, CircleDot,
+  Activity, TrendingUp, Zap, Sparkles, Building2, Upload, Plus, CircleDot, Radio, FileCheck,
 } from "lucide-react";
 
 const NAV = [
   { to: "/dashboard", label: "Overview", icon: LayoutDashboard, group: "MONITOR" },
   { to: "/campaigns", label: "Campaigns", icon: Megaphone, group: "MONITOR" },
+  { to: "/mlr", label: "MLR Review", icon: FileCheck, group: "MONITOR" },
   { to: "/audiences", label: "Audience Scorer", icon: Users, group: "INTELLIGENCE" },
   { to: "/pmp", label: "PMP / Supply", icon: Network, group: "INTELLIGENCE" },
   { to: "/data-cost", label: "Data Cost", icon: Wallet, group: "INTELLIGENCE" },
@@ -14,6 +15,7 @@ const NAV = [
   { to: "/script-lift", label: "Script Lift", icon: TrendingUp, group: "OUTCOMES" },
   { to: "/vendors", label: "Vendor Value", icon: Building2, group: "OUTCOMES" },
   { to: "/rtb", label: "RTB Simulator", icon: Zap, group: "OPTIMIZE" },
+  { to: "/live", label: "Live Bid Stream", icon: Radio, group: "OPTIMIZE" },
   { to: "/ai", label: "AI Recommendations", icon: Sparkles, group: "OPTIMIZE" },
   { to: "/upload", label: "Data Upload", icon: Upload, group: "ADMIN" },
 ];
@@ -32,7 +34,6 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen flex bg-slate-50" data-testid="app-layout">
-      {/* Sidebar */}
       <aside className="hidden lg:flex w-64 flex-col bg-white border-r border-slate-200">
         <div className="h-14 flex items-center px-5 border-b border-slate-200">
           <div className="flex items-center gap-2">
@@ -84,7 +85,6 @@ export default function Layout() {
         </div>
       </aside>
 
-      {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
         <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-6">
           <div className="flex items-center gap-3">
