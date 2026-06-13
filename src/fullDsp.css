@@ -172,6 +172,20 @@
 .plan-cols { grid-template-columns: 1.5fr 0.9fr 0.7fr 1fr 1fr 0.8fr 0.8fr 1fr; }
 .opt-cols { grid-template-columns: 1.8fr 1.4fr 0.9fr 1fr 1fr 0.7fr 1fr; }
 .result-cols { grid-template-columns: 1.6fr 0.7fr 0.8fr 0.9fr 1fr 0.9fr 0.7fr 1.1fr; }
+.fact-cols { grid-template-columns: 1.2fr 0.8fr 1.1fr 0.9fr 1.1fr 1fr; }
+
+/* Connector rows */
+.connector-row {
+  align-items: center;
+  background: rgba(2, 6, 23, 0.42);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr auto auto;
+  padding: 12px 16px;
+}
+.connector-row small { color: var(--text-muted); display: block; }
 
 /* Identity-resolution chips */
 .chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 4px; }
@@ -251,6 +265,8 @@ button.mini.danger { border-color: rgba(251, 113, 133, 0.4); color: #fda4af; }
   .partner-cols,
   .plan-cols,
   .opt-cols,
-  .result-cols { grid-template-columns: 1fr; }
+  .result-cols,
+  .fact-cols,
+  .connector-row { grid-template-columns: 1fr; }
   .data-head { display: none; }
 }

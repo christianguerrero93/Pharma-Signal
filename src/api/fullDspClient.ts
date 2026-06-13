@@ -182,6 +182,7 @@ export type CampaignReport = {
   spend: number;
   pacing: number;
   pacing_status: string;
+  source: string;
   impressions: number;
   clicks: number;
   conversions: number;
@@ -193,9 +194,18 @@ export type CampaignReport = {
 };
 export type Reporting = {
   days: number;
+  source: string;
+  live_campaigns: number;
   portfolio: { impressions: number; clicks: number; conversions: number; spend: number; ctr: number; cpa: number };
   campaigns: CampaignReport[];
 };
+
+export type RtbBid = { id: string; impid: string; price: number; nurl: string; burl: string; adm: string; crid: string; w?: number | null; h?: number | null };
+export type RtbBidResponse = { id: string; bidid: string; cur: string; seatbid: { seat: string; bid: RtbBid[] }[] };
+export type RtbWin = { id: string; line_item_id: string; request_id: string; imp_id: string; partner: string; bid_price_cpm: number; clear_price_cpm: number | null; status: string; ts: string };
+
+export type Connector = { id: string; name: string; kind: string; status: string; config_json: string; last_sync: string | null; created_at: string; fact_count: number };
+export type ConnectorFacts = { by_source: { source: string; n: number; impressions: number; clicks: number; conversions: number; spend: number }[] };
 
 export type MeasurementResultDetail = {
   id: string;

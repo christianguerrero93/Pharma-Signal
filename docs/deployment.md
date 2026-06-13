@@ -30,8 +30,11 @@ Set these in the Render dashboard:
 | `FULL_DSP_JWT_SECRET` | a strong random string used to sign login JWTs |
 | `FULL_DSP_DB` | `/data/pharma_signal_dsp.db` (already set by the blueprint; ignored if `DATABASE_URL` is set) |
 | `DATABASE_URL` | *(optional)* `postgresql://user:pass@host:5432/db` to use Postgres instead of SQLite |
+| `CORS_ORIGINS` | *(optional)* comma-separated frontend origin allowlist |
+| `PUBLIC_BASE_URL` | *(optional)* this API's public origin, used to build OpenRTB win/billing callback URLs |
 
-Your API URL will look like `https://pharma-signal-api.onrender.com`.
+Your API URL will look like `https://pharma-signal-api.onrender.com`. Set
+`PUBLIC_BASE_URL` to that value once known so OpenRTB nurl/burl callbacks resolve.
 
 ### Option B — any Docker host (Railway, Fly.io, Cloud Run, ECS, a VM)
 
@@ -98,7 +101,19 @@ heavy crypto dependency) and passwords are hashed with **bcrypt**. Endpoints enf
 writes require `admin` or `trader`; MLR creative review requires `admin` or `analyst`.
 Always set a strong `FULL_DSP_JWT_SECRET` in production.
 
-## 5. CORS
+## 5. Live feeds & OpenRTB
+
+- **Connectors** ingest delivery / engagement / outcome facts into a warehouse table.
+  `POST /api/full/connectors/{id}/sync` pulls (or, in the demo, generates) facts;
+  `POST /api/full/connectors/ingest` accepts real rows from GA4 / SSP / Crossix feeds.
+  Once SSP/identity facts exist, **Reporting switches from simulated to live data**.
+- **OpenRTB**: `POST /api/full/rtb/bid?line_item_id=...` takes an OpenRTB 2.x BidRequest
+  and returns a BidResponse (or `204` no-bid). The response carries win-notice (`nurl`)
+  and billing (`burl`) URLs built from `PUBLIC_BASE_URL`; exchanges call
+  `/api/full/rtb/win` (substituting `${AUCTION_PRICE}`) and `/api/full/rtb/billing`.
+  To connect a real exchange, register this bid endpoint and set `PUBLIC_BASE_URL`.
+
+## 6. CORS
 
 CORS origins are controlled by the `CORS_ORIGINS` env var:
 
@@ -109,7 +124,7 @@ CORS origins are controlled by the `CORS_ORIGINS` env var:
 
 ---
 
-## 6. Local full stack
+## 7. Local full stack
 
 ```bash
 # backend
