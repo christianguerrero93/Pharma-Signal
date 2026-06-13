@@ -149,7 +149,21 @@ via their hooks; each step is a no-op until you add the matching secret.
 3. **Add GitHub secrets** — repo **Settings → Secrets and variables → Actions → New repository secret**:
    - `RENDER_DEPLOY_HOOK_URL` = the Render hook URL
    - `NETLIFY_BUILD_HOOK_URL` = the Netlify hook URL
+   - `HEALTH_CHECK_URL` = your full backend health URL, e.g. `https://pharma-signal-api.onrender.com/health`
 4. **(Recommended)** Turn **off** auto-deploy in Render (service → Settings → Build & Deploy → Auto-Deploy: No) and Netlify (Site configuration → Build & deploy → Continuous deployment → Stop builds), so this CI-gated workflow is the single source of truth.
 
 Now every merge to `main` runs CI; on green, the backend and frontend redeploy. You can
 also run it manually from the **Actions** tab (**Deploy → Run workflow**).
+
+### Post-deploy health gate
+
+When `HEALTH_CHECK_URL` is set, the Deploy workflow polls the backend `/health` for
+up to ~10 minutes after triggering the release and **fails loudly** if it never
+returns `{"status":"ok"}` — so a broken release surfaces as a red Deploy run.
+
+### Keep-alive (avoid cold starts)
+
+`.github/workflows/keepalive.yml` pings `HEALTH_CHECK_URL` every ~10 minutes so
+Render's free tier (which sleeps after ~15 min idle) stays warm. It's a no-op until
+`HEALTH_CHECK_URL` is set. GitHub cron is best-effort, so the very first request
+after a long idle period can still cold-start.
