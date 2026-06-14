@@ -75,6 +75,10 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   frequency, and measurement state and surfaces prioritized next actions. The UI adds an
   onboarding checklist, toast notifications, loading/empty states, and plain-language
   hints for ad-tech/pharma jargon.
+- **Channels & targeting** — a channel taxonomy (Display, Video, CTV, Audio, Native,
+  DOOH, EHR) with typical-CPM/device metadata, plus per-line-item targeting: devices,
+  geos, dayparting, brand-safety tier, and viewability floor. Creatives render a visual
+  preview in the MLR queue.
 
 ### Product experience
 

@@ -63,6 +63,19 @@ JWT_TTL_SECONDS = int(os.environ.get("FULL_DSP_JWT_TTL", "43200"))  # 12 hours
 # Absolute base used to build OpenRTB win-notice (nurl) and billing (burl) URLs.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
+# Channel taxonomy (DeepIntent-style): typical CPM ranges, devices, and notes.
+CHANNELS = [
+    {"id": "Display", "label": "Display", "typical_cpm": [4, 12], "devices": ["desktop", "mobile", "tablet"], "note": "Banner & in-app display"},
+    {"id": "Video", "label": "Online Video", "typical_cpm": [12, 28], "devices": ["desktop", "mobile", "tablet"], "note": "In-stream / out-stream video"},
+    {"id": "CTV", "label": "Connected TV", "typical_cpm": [22, 45], "devices": ["ctv"], "note": "Streaming TV, non-skippable"},
+    {"id": "Audio", "label": "Digital Audio", "typical_cpm": [8, 18], "devices": ["mobile", "desktop"], "note": "Podcast & streaming audio"},
+    {"id": "Native", "label": "Native", "typical_cpm": [6, 16], "devices": ["desktop", "mobile", "tablet"], "note": "In-feed endemic health content"},
+    {"id": "DOOH", "label": "Digital OOH", "typical_cpm": [6, 14], "devices": ["dooh"], "note": "Point-of-care & out-of-home screens"},
+    {"id": "EHR", "label": "EHR / Point of Care", "typical_cpm": [18, 40], "devices": ["desktop"], "note": "Endemic EHR messaging at point of care"},
+]
+DEVICE_TYPES = ["desktop", "mobile", "tablet", "ctv", "dooh"]
+BRAND_SAFETY_TIERS = ["standard", "strict", "pharma_sensitive"]
+
 
 # ---------------------------------------------------------------------------
 # Infrastructure helpers
@@ -413,6 +426,14 @@ class IngestRequest(BaseModel):
     rows: List[DeliveryFact] = Field(min_length=1)
 
 
+class TargetingUpdate(BaseModel):
+    devices: List[str] = Field(default_factory=list)
+    geos: List[str] = Field(default_factory=list)
+    dayparts: List[int] = Field(default_factory=list)   # hours of day, 0-23
+    brand_safety: str = Field(default="standard", pattern="^(standard|strict|pharma_sensitive)$")
+    viewability_target: float = Field(default=0.7, ge=0, le=1)
+
+
 # ---------------------------------------------------------------------------
 # Database bootstrap + seed
 # ---------------------------------------------------------------------------
@@ -421,6 +442,7 @@ CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT UNIQUE, passwo
 CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, name TEXT, brand TEXT, indication TEXT, audience_type TEXT, objective TEXT, budget REAL, flight_start TEXT, flight_end TEXT, status TEXT, created_by TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS line_items (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, channel TEXT, budget REAL, max_bid_cpm REAL, pacing_mode TEXT, status TEXT, frequency_cap INTEGER, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS bid_factors (line_item_id TEXT PRIMARY KEY, audience_quality_weight REAL, supply_quality_weight REAL, outcome_signal_weight REAL, contextual_relevance_weight REAL, working_media_weight REAL, frequency_penalty_weight REAL, bid_shading_pct REAL, max_bid_multiplier REAL, data_cost_guardrail REAL, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS line_item_targeting (line_item_id TEXT PRIMARY KEY, devices TEXT, geos TEXT, dayparts TEXT, brand_safety TEXT, viewability_target REAL, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS supply_paths (id TEXT PRIMARY KEY, partner TEXT, channel TEXT, deal_id TEXT, seller_type TEXT, bid_floor_cpm REAL, viewability REAL, fraud_risk REAL, match_rate REAL, working_media_ratio REAL, outcome_score REAL, status TEXT);
 CREATE TABLE IF NOT EXISTS audiences (id TEXT PRIMARY KEY, name TEXT, audience_type TEXT, description TEXT, npi_count INTEGER, reach INTEGER, match_rate REAL, data_cpm REAL, refresh_cadence TEXT, contains_phi INTEGER, status TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS creatives (id TEXT PRIMARY KEY, campaign_id TEXT, name TEXT, fmt TEXT, channel TEXT, claims TEXT, isi_included INTEGER, landing_url TEXT, mlr_status TEXT, version INTEGER, reviewer TEXT, review_notes TEXT, submitted_at TEXT, decided_at TEXT);
@@ -584,6 +606,55 @@ def update_bid_factors(line_item_id: str, payload: BidFactors, user: Dict[str, A
         db.commit()
     audit(user["email"], "bid_factors_update", "line_item", line_item_id, values)
     return {"line_item_id": line_item_id, **values, "updated_at": ts}
+
+
+@app.get("/api/full/channels")
+def list_channels(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    return {"channels": CHANNELS, "devices": DEVICE_TYPES, "brand_safety_tiers": BRAND_SAFETY_TIERS}
+
+
+def _targeting_defaults(line_item_id: str) -> Dict[str, Any]:
+    return {"line_item_id": line_item_id, "devices": [], "geos": [], "dayparts": [], "brand_safety": "standard", "viewability_target": 0.7, "updated_at": None}
+
+
+@app.get("/api/full/line-items/{line_item_id}/targeting")
+def get_targeting(line_item_id: str, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    with conn() as db:
+        row = db.execute("SELECT * FROM line_item_targeting WHERE line_item_id=?", (line_item_id,)).fetchone()
+    if not row:
+        return _targeting_defaults(line_item_id)
+    row = dict(row)
+    return {
+        "line_item_id": line_item_id,
+        "devices": json.loads(row["devices"] or "[]"),
+        "geos": json.loads(row["geos"] or "[]"),
+        "dayparts": json.loads(row["dayparts"] or "[]"),
+        "brand_safety": row["brand_safety"],
+        "viewability_target": row["viewability_target"],
+        "updated_at": row["updated_at"],
+    }
+
+
+@app.put("/api/full/line-items/{line_item_id}/targeting")
+def set_targeting(line_item_id: str, payload: TargetingUpdate, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    bad_devices = set(payload.devices) - set(DEVICE_TYPES)
+    if bad_devices:
+        raise HTTPException(400, f"Unknown device types: {sorted(bad_devices)}")
+    if any(h < 0 or h > 23 for h in payload.dayparts):
+        raise HTTPException(400, "Dayparts must be hours 0-23")
+    ts = now_iso()
+    with conn() as db:
+        if not db.execute("SELECT id FROM line_items WHERE id=?", (line_item_id,)).fetchone():
+            raise HTTPException(404, "Line item not found")
+        exists = db.execute("SELECT line_item_id FROM line_item_targeting WHERE line_item_id=?", (line_item_id,)).fetchone()
+        values = (json.dumps(payload.devices), json.dumps(payload.geos), json.dumps(payload.dayparts), payload.brand_safety, payload.viewability_target, ts)
+        if exists:
+            db.execute("UPDATE line_item_targeting SET devices=?, geos=?, dayparts=?, brand_safety=?, viewability_target=?, updated_at=? WHERE line_item_id=?", (*values, line_item_id))
+        else:
+            db.execute("INSERT INTO line_item_targeting VALUES (?, ?, ?, ?, ?, ?, ?)", (line_item_id, *values))
+        db.commit()
+    audit(user["email"], "targeting_update", "line_item", line_item_id, payload.model_dump())
+    return {"line_item_id": line_item_id, **payload.model_dump(), "updated_at": ts}
 
 
 @app.post("/api/full/bulk-edit")

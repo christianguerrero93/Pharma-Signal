@@ -277,6 +277,10 @@ export type Overview = { kpis: Record<string, number>; narrative: string; storag
 export type Recommendation = { priority: 'high' | 'medium' | 'low'; category: string; title: string; detail: string; tab: string };
 export type Insights = { recommendations: Recommendation[]; counts: { high: number; medium: number; low: number }; generated_at: string };
 
+export type Channel = { id: string; label: string; typical_cpm: [number, number]; devices: string[]; note: string };
+export type Channels = { channels: Channel[]; devices: string[]; brand_safety_tiers: string[] };
+export type Targeting = { line_item_id: string; devices: string[]; geos: string[]; dayparts: number[]; brand_safety: string; viewability_target: number; updated_at: string | null };
+
 export function friendlyError(err: unknown, fallback: string): string {
   const message = err instanceof Error ? err.message : String(err || fallback);
   if (message.toLowerCase().includes('failed to fetch') || message.toLowerCase().includes('networkerror')) {
