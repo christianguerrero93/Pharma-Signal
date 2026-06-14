@@ -1,13 +1,13 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, ArrowRight, BadgeCheck, Boxes, CheckCircle2, Circle, ClipboardList, Gauge, Info, LayoutDashboard,
+  Activity, ArrowRight, BadgeCheck, Boxes, CheckCircle2, Circle, ClipboardList, Download, Gauge, Info, LayoutDashboard,
   Lightbulb, Loader2, Lock, PencilRuler, Plug, RefreshCw, Radio, ShieldCheck, SlidersHorizontal, Target,
   TrendingUp, Users, Zap,
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
   Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
-  Creative, Deal, Forecast, FrequencyGovernance, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
+  Creative, Deal, Forecast, FrequencyGovernance, FrequencyState, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
   Overview, Planner, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
   Targeting, User, Workbench,
 } from './api/fullDspClient';
@@ -21,6 +21,23 @@ const money2 = (v: number) => new Intl.NumberFormat('en-US', { style: 'currency'
 const num = (v: number) => new Intl.NumberFormat('en-US').format(Math.round(v || 0));
 const pct = (v: number) => `${Math.round((v || 0) * 100)}%`;
 const pct1 = (v: number) => `${((v || 0) * 100).toFixed(1)}%`;
+
+async function downloadCsv(dataset: string) {
+  try {
+    const resp = await fetch(`${API_BASE}/api/full/export?dataset=${dataset}`, { headers: { Authorization: `Bearer ${localStorage.getItem('pharma_signal_full_token')}` } });
+    if (!resp.ok) { toast.error('Export failed'); return; }
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pharma-signal-${dataset}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${dataset}.csv`);
+  } catch { toast.error('Export failed'); }
+}
 
 const starterBidFactors: BidFactors = {
   audience_quality_weight: 0.28, supply_quality_weight: 0.22, outcome_signal_weight: 0.24,
@@ -793,6 +810,17 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
   const [simForm, setSimForm] = useState({ requests: 2000, phi_leak_rate: 0.03 });
   const [rtb, setRtb] = useState<RtbBidResponse | 'nobid' | null>(null);
   const [rtbForm, setRtbForm] = useState({ bidfloor: 6, country: 'USA', consent: true });
+  const [freqState, setFreqState] = useState<FrequencyState | null>(null);
+
+  const loadFreqState = useCallback((lid: string) => {
+    if (!lid) return;
+    client.get<FrequencyState>(`/api/full/frequency/state/${lid}`).then(setFreqState).catch(() => setFreqState(null));
+  }, [client]);
+  useEffect(() => { if (selectedLineId) loadFreqState(selectedLineId); }, [selectedLineId, loadFreqState]);
+  async function resetFreq() {
+    if (!selectedLineId) return;
+    try { await client.post(`/api/full/frequency/state/${selectedLineId}/reset`, {}); toast.success('Frequency state reset'); loadFreqState(selectedLineId); } catch (e) { setError(friendlyError(e, 'Reset failed')); }
+  }
 
   useEffect(() => {
     if (!selectedLineId && allLines[0]) {
@@ -824,7 +852,7 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
   async function runSim() {
     if (!selectedLineId) return;
     setBusy(true);
-    try { setSim(await client.post<Bidstream>('/api/full/bidstream/simulate', { line_item_id: selectedLineId, requests: simForm.requests, phi_leak_rate: simForm.phi_leak_rate, seed: 42 })); } catch (e) { setError(friendlyError(e, 'Bidstream simulation failed')); } finally { setBusy(false); }
+    try { const r = await client.post<Bidstream>('/api/full/bidstream/simulate', { line_item_id: selectedLineId, requests: simForm.requests, phi_leak_rate: simForm.phi_leak_rate, seed: 42 }); setSim(r); toast.success(`Win rate ${pct1(r.win_rate)} · ${num(r.impressions_won)} impressions`); loadFreqState(selectedLineId); } catch (e) { setError(friendlyError(e, 'Bidstream simulation failed')); toast.error('Simulation failed'); } finally { setBusy(false); }
   }
   async function runRtb() {
     if (!selectedLineId) return;
@@ -873,6 +901,7 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
               <div className="metric-card"><span>Frequency capped</span><strong>{num(sim.frequency_capped)}</strong></div>
               <div className="metric-card"><span>Pace throttled</span><strong>{num(sim.pace_throttled)}</strong></div>
               <div className="metric-card"><span>Targeting filtered</span><strong>{num(sim.targeting_filtered)}</strong></div>
+              <div className="metric-card"><span>Carried-over users<Hint text="Per-user frequency persists across runs — re-run to see caps bite harder." /></span><strong>{num(sim.carried_over_users)}</strong></div>
               <div className="metric-card"><span>PHI blocked</span><strong className="warn">{num(sim.phi_blocked)}</strong></div>
             </div>
             <div className="decision-bar">
@@ -907,6 +936,19 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
             <pre className="result-box">{JSON.stringify(rtb, null, 2)}</pre>
           </>
         )}
+      </Panel>
+
+      <Panel eyebrow="Frequency governance" title="Persisted per-user frequency" icon={<Gauge />}
+        actions={<button type="button" className="secondary-button" disabled={!selectedLineId} onClick={resetFreq}>Reset</button>}>
+        <p>Frequency is persisted per user across simulation runs — caps carry over so the same NPI/household isn't over-exposed. Re-run the bidstream to accumulate.</p>
+        {freqState && freqState.unique_users > 0 ? (
+          <div className="metric-grid">
+            <div className="metric-card"><span>Unique users</span><strong>{num(freqState.unique_users)}</strong></div>
+            <div className="metric-card"><span>Total impressions</span><strong>{num(freqState.total_impressions)}</strong></div>
+            <div className="metric-card"><span>Avg frequency</span><strong className={freqState.avg_frequency > freqState.frequency_cap ? 'warn' : 'ok'}>{freqState.avg_frequency}x</strong></div>
+            <div className="metric-card"><span>Over cap ({freqState.frequency_cap})</span><strong className="warn">{num(freqState.over_cap_users)}</strong></div>
+          </div>
+        ) : <p className="muted-label">No frequency yet — run the bidstream simulator above.</p>}
       </Panel>
     </>
   );
@@ -1139,7 +1181,7 @@ function ReportingTab({ client, setError }: TabProps) {
   return (
     <>
       <Panel eyebrow="Delivery & outcomes" title="Portfolio performance" icon={<Gauge />}
-        actions={<div className="inline-form">{report && <Badge tone={report.source === 'live' ? 'ok' : 'muted'}>{report.source} data{report.live_campaigns ? ` · ${report.live_campaigns} live` : ''}</Badge>}<label className="inline-label">Window<select value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7, 14, 30, 60, 90].map((d) => <option key={d} value={d}>{d}d</option>)}</select></label></div>}>
+        actions={<div className="inline-form">{report && <Badge tone={report.source === 'live' ? 'ok' : 'muted'}>{report.source} data{report.live_campaigns ? ` · ${report.live_campaigns} live` : ''}</Badge>}<button type="button" className="secondary-button" onClick={() => downloadCsv('campaigns')}><Download size={15} /> Campaigns</button><button type="button" className="secondary-button" onClick={() => downloadCsv('delivery')}><Download size={15} /> Delivery</button><label className="inline-label">Window<select value={days} onChange={(e) => setDays(Number(e.target.value))}>{[7, 14, 30, 60, 90].map((d) => <option key={d} value={d}>{d}d</option>)}</select></label></div>}>
         <div className="metric-grid">
           <div className="metric-card"><span>Spend</span><strong>{money(p?.spend || 0)}</strong></div>
           <div className="metric-card"><span>Impressions</span><strong>{num(p?.impressions || 0)}</strong></div>
@@ -1281,7 +1323,8 @@ function ComplianceTab({ client, setError }: TabProps) {
 // ---------------------------------------------------------------------------
 function AuditTab({ workbench }: { workbench: Workbench | null }) {
   return (
-    <Panel eyebrow="Audit" title="Every login, build, edit, review, and auction is logged" icon={<ClipboardList />}>
+    <Panel eyebrow="Audit" title="Every login, build, edit, review, and auction is logged" icon={<ClipboardList />}
+      actions={<button type="button" className="secondary-button" onClick={() => downloadCsv('audit')}><Download size={15} /> Export CSV</button>}>
       <div className="audit-list">
         {workbench?.audit.map((row) => (
           <div key={row.id}><strong>{row.action}</strong><span>{row.actor}</span><span>{row.entity_type}:{row.entity_id}</span><small>{row.ts}</small></div>
