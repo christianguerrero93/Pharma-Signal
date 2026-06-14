@@ -1,15 +1,17 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, BadgeCheck, Boxes, ClipboardList, Gauge, LayoutDashboard, Lock, PencilRuler, Plug,
-  RefreshCw, Radio, ShieldCheck, SlidersHorizontal, Target, TrendingUp, Users, Zap,
+  Activity, ArrowRight, BadgeCheck, Boxes, CheckCircle2, Circle, ClipboardList, Gauge, Info, LayoutDashboard,
+  Lightbulb, Loader2, Lock, PencilRuler, Plug, RefreshCw, Radio, ShieldCheck, SlidersHorizontal, Target,
+  TrendingUp, Users, Zap,
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
   Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Compliance, Connector, ConnectorFacts,
-  Creative, Deal, Forecast, FrequencyGovernance, MeasurementPlan, MeasurementResultDetail, Optimizer,
+  Creative, Deal, Forecast, FrequencyGovernance, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
   Overview, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
   User, Workbench,
 } from './api/fullDspClient';
+import { toast, ToastContainer } from './toast';
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -27,11 +29,12 @@ const starterBidFactors: BidFactors = {
 };
 
 type TabKey =
-  | 'overview' | 'campaigns' | 'audiences' | 'creative' | 'supply'
+  | 'overview' | 'insights' | 'campaigns' | 'audiences' | 'creative' | 'supply'
   | 'bidder' | 'measurement' | 'optimization' | 'reporting' | 'connectors' | 'compliance' | 'audit';
 
 const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
   { key: 'overview', label: 'Overview', icon: <LayoutDashboard size={16} /> },
+  { key: 'insights', label: 'Insights', icon: <Lightbulb size={16} /> },
   { key: 'campaigns', label: 'Campaigns', icon: <ClipboardList size={16} /> },
   { key: 'audiences', label: 'Audiences', icon: <Users size={16} /> },
   { key: 'creative', label: 'Creative & MLR', icon: <BadgeCheck size={16} /> },
@@ -47,6 +50,25 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
 
 function Badge({ tone, children }: { tone: string; children: ReactNode }) {
   return <span className={`pill pill-${tone}`}>{children}</span>;
+}
+
+// Plain-language tooltip for jargon — hover the (i) to learn a term.
+function Hint({ text }: { text: string }) {
+  return <span className="hint" tabIndex={0} title={text} aria-label={text}><Info size={13} /></span>;
+}
+
+function Loading({ label = 'Loading…' }: { label?: string }) {
+  return <div className="loading"><Loader2 size={18} className="spin" /><span>{label}</span></div>;
+}
+
+function EmptyState({ title, hint, cta, onCta }: { title: string; hint?: string; cta?: string; onCta?: () => void }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      {hint && <p>{hint}</p>}
+      {cta && onCta && <button type="button" className="primary-button" onClick={onCta}>{cta} <ArrowRight size={15} /></button>}
+    </div>
+  );
 }
 
 function Panel({ eyebrow, title, icon, children, actions }: { eyebrow: string; title: string; icon?: ReactNode; children: ReactNode; actions?: ReactNode }) {
@@ -164,7 +186,8 @@ export default function EnterpriseDSPApp() {
 
       {error && <div className="error-box wide">{error}</div>}
 
-      {tab === 'overview' && <OverviewTab overview={overview} workbench={workbench} client={client} />}
+      {tab === 'overview' && <OverviewTab overview={overview} workbench={workbench} client={client} setTab={setTab} />}
+      {tab === 'insights' && <InsightsTab client={client} setTab={setTab} setError={setError} />}
       {tab === 'campaigns' && <CampaignsTab client={client} workbench={workbench} reload={loadCore} setError={setError} />}
       {tab === 'audiences' && <AudiencesTab client={client} setError={setError} />}
       {tab === 'creative' && <CreativeTab client={client} workbench={workbench} role={user.role} setError={setError} />}
@@ -176,6 +199,7 @@ export default function EnterpriseDSPApp() {
       {tab === 'connectors' && <ConnectorsTab client={client} setError={setError} />}
       {tab === 'compliance' && <ComplianceTab client={client} setError={setError} />}
       {tab === 'audit' && <AuditTab workbench={workbench} />}
+      <ToastContainer />
     </main>
   );
 }
@@ -186,7 +210,7 @@ type TabProps = { client: Client; setError: (m: string) => void };
 // ---------------------------------------------------------------------------
 // Overview
 // ---------------------------------------------------------------------------
-function OverviewTab({ overview, workbench, client }: { overview: Overview | null; workbench: Workbench | null; client: Client }) {
+function OverviewTab({ overview, workbench, client, setTab }: { overview: Overview | null; workbench: Workbench | null; client: Client; setTab: (t: TabKey) => void }) {
   const [compliance, setCompliance] = useState<Compliance | null>(null);
   const [freq, setFreq] = useState<FrequencyGovernance | null>(null);
   useEffect(() => {
@@ -195,21 +219,29 @@ function OverviewTab({ overview, workbench, client }: { overview: Overview | nul
   }, [client]);
 
   const k = overview?.kpis || {};
-  const cards: { label: string; value: string }[] = [
+  const steps: { label: string; done: boolean; tab: TabKey; cta: string }[] = [
+    { label: 'Build a campaign with line items', done: (k.campaigns ?? 0) > 0, tab: 'campaigns', cta: 'Create campaign' },
+    { label: 'Submit a creative for MLR review', done: (k.creatives ?? 0) > 0, tab: 'creative', cta: 'Add creative' },
+    { label: 'Connect a live data feed', done: (k.connectors_live ?? 0) > 0, tab: 'connectors', cta: 'Sync a connector' },
+    { label: 'Plan measurement to prove lift', done: (k.measurement_plans ?? 0) > 0, tab: 'measurement', cta: 'Plan a study' },
+  ];
+  const nextStep = steps.find((s) => !s.done);
+  const doneCount = steps.filter((s) => s.done).length;
+  const cards: { label: string; value: string; hint?: string }[] = [
     { label: 'Active campaigns', value: `${k.active_campaigns ?? 0}/${k.campaigns ?? 0}` },
-    { label: 'Line items', value: num(k.line_items ?? 0) },
+    { label: 'Line items', value: num(k.line_items ?? 0), hint: 'Buys within a campaign — each targets a channel with its own budget, bid, and frequency cap.' },
     { label: 'Total budget', value: money(k.total_budget ?? 0) },
     { label: 'Audiences', value: num(k.audiences ?? 0) },
-    { label: 'Addressable HCPs', value: num(k.addressable_hcps ?? 0) },
-    { label: 'Creatives approved', value: `${k.creatives_approved ?? 0}/${k.creatives ?? 0}` },
-    { label: 'PMP / deals', value: num(k.deals ?? 0) },
+    { label: 'Addressable HCPs', value: num(k.addressable_hcps ?? 0), hint: 'Verified, NPI-matched healthcare professionals you can reach — never using PHI.' },
+    { label: 'Creatives approved', value: `${k.creatives_approved ?? 0}/${k.creatives ?? 0}`, hint: 'Ads cleared by Medical-Legal-Regulatory (MLR) review. Only approved creatives can serve.' },
+    { label: 'PMP / deals', value: num(k.deals ?? 0), hint: 'Private Marketplace deals — negotiated, higher-quality inventory packages.' },
     { label: 'Supply paths', value: num(k.supply_paths ?? 0) },
-    { label: 'Measurement ready', value: `${k.measurement_ready ?? 0}/${k.measurement_plans ?? 0}` },
+    { label: 'Measurement ready', value: `${k.measurement_ready ?? 0}/${k.measurement_plans ?? 0}`, hint: 'Study designs with enough statistical power to detect the expected lift.' },
     { label: 'Measured / significant', value: `${k.measured_studies ?? 0}/${k.significant_studies ?? 0}` },
-    { label: 'Live connectors', value: `${k.connectors_live ?? 0}/${k.connectors ?? 0}` },
+    { label: 'Live connectors', value: `${k.connectors_live ?? 0}/${k.connectors ?? 0}`, hint: 'Data feeds (GA4, SSP, Crossix). Once synced, reporting uses live data.' },
     { label: 'Delivery facts', value: num(k.live_delivery_facts ?? 0) },
-    { label: 'RTB wins', value: num(k.rtb_wins ?? 0) },
-    { label: 'Avg working media', value: pct(k.avg_working_media_ratio ?? 0) },
+    { label: 'RTB wins', value: num(k.rtb_wins ?? 0), hint: 'Impressions won through the OpenRTB bidder.' },
+    { label: 'Avg working media', value: pct(k.avg_working_media_ratio ?? 0), hint: 'Share of spend that buys actual media vs. data/fees. Higher is more efficient.' },
   ];
 
   return (
@@ -229,8 +261,24 @@ function OverviewTab({ overview, workbench, client }: { overview: Overview | nul
         </div>
       </section>
 
+      {nextStep && (
+        <section className="onboard-card">
+          <div className="onboard-head">
+            <div><p className="eyebrow">Getting started · {doneCount}/{steps.length} done</p><h2>Set up your first campaign</h2></div>
+            <button className="primary-button" onClick={() => setTab(nextStep.tab)}>{nextStep.cta} <ArrowRight size={15} /></button>
+          </div>
+          <div className="onboard-steps">
+            {steps.map((s) => (
+              <button key={s.label} className={`onboard-step ${s.done ? 'done' : ''}`} onClick={() => setTab(s.tab)}>
+                {s.done ? <CheckCircle2 size={18} /> : <Circle size={18} />}<span>{s.label}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="metric-grid">
-        {cards.map((c) => <div className="metric-card" key={c.label}><span>{c.label}</span><strong>{c.value}</strong></div>)}
+        {cards.map((c) => <div className="metric-card" key={c.label}><span>{c.label}{c.hint ? <Hint text={c.hint} /> : null}</span><strong>{c.value}</strong></div>)}
       </section>
 
       <div className="dsp-grid two">
@@ -266,6 +314,48 @@ function OverviewTab({ overview, workbench, client }: { overview: Overview | nul
 }
 
 // ---------------------------------------------------------------------------
+// Insights (AI recommendations)
+// ---------------------------------------------------------------------------
+function InsightsTab({ client, setTab, setError }: { client: Client; setTab: (t: TabKey) => void; setError: (m: string) => void }) {
+  const [data, setData] = useState<Insights | null>(null);
+  const [loading, setLoading] = useState(true);
+  const load = useCallback(() => {
+    setLoading(true);
+    client.get<Insights>('/api/full/insights').then(setData).catch((e) => setError(friendlyError(e, 'Insights failed'))).finally(() => setLoading(false));
+  }, [client, setError]);
+  useEffect(() => { load(); }, [load]);
+  const tone = (p: string) => (p === 'high' ? 'danger' : p === 'medium' ? 'warn' : 'accent');
+
+  return (
+    <Panel eyebrow="AI recommendations" title="What to do next" icon={<Lightbulb />} actions={<button className="secondary-button" onClick={load}><RefreshCw size={16} /> Refresh</button>}>
+      <p>Pharma Signal reads your campaigns, supply, creative, frequency, and measurement state and surfaces the highest-impact next actions.</p>
+      {loading ? <Loading label="Analyzing your account…" /> : (
+        <>
+          <div className="metric-grid">
+            <div className="metric-card"><span>High priority</span><strong className="warn">{data?.counts.high ?? 0}</strong></div>
+            <div className="metric-card"><span>Medium</span><strong>{data?.counts.medium ?? 0}</strong></div>
+            <div className="metric-card"><span>Low</span><strong>{data?.counts.low ?? 0}</strong></div>
+          </div>
+          <div className="insight-list">
+            {data?.recommendations.map((r, i) => (
+              <div className={`insight insight-${tone(r.priority)}`} key={i}>
+                <div className="insight-main">
+                  <div className="insight-head"><Badge tone={tone(r.priority)}>{r.priority}</Badge><strong>{r.title}</strong></div>
+                  <p>{r.detail}</p>
+                  <small>{r.category}</small>
+                </div>
+                <button type="button" className="secondary-button" onClick={() => setTab(r.tab as TabKey)}>Open <ArrowRight size={14} /></button>
+              </div>
+            ))}
+            {data && !data.recommendations.length && <EmptyState title="All clear — no recommendations right now." hint="Your account looks healthy. New recommendations appear as state changes." />}
+          </div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Campaigns
 // ---------------------------------------------------------------------------
 function CampaignsTab({ client, workbench, reload, setError }: { client: Client; workbench: Workbench | null; reload: () => void; setError: (m: string) => void }) {
@@ -287,8 +377,9 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
     setBusy(true);
     try {
       await client.post('/api/full/campaign-build', { campaign: campaignForm, line_items: lineItems, default_bid_factors: starterBidFactors });
+      toast.success(`Campaign "${campaignForm.name}" created`);
       reload();
-    } catch (err) { setError(friendlyError(err, 'Campaign build failed')); } finally { setBusy(false); }
+    } catch (err) { setError(friendlyError(err, 'Campaign build failed')); toast.error('Campaign build failed'); } finally { setBusy(false); }
   }
 
   async function bulkEdit(event: FormEvent) {
@@ -508,7 +599,7 @@ function CreativeTab({ client, workbench, role, setError }: { client: Client; wo
   }
   async function review(id: string, decision: string) {
     setBusy(true);
-    try { await client.post(`/api/full/creatives/${id}/review`, { decision, notes: notes[id] || '' }); load(); } catch (e) { setError(friendlyError(e, 'Review failed')); } finally { setBusy(false); }
+    try { await client.post(`/api/full/creatives/${id}/review`, { decision, notes: notes[id] || '' }); toast.success(`Creative ${decision.replaceAll('_', ' ')}`); load(); } catch (e) { setError(friendlyError(e, 'Review failed')); toast.error('Review failed'); } finally { setBusy(false); }
   }
 
   const canReview = role === 'admin' || role === 'analyst';
@@ -799,8 +890,9 @@ function MeasurementTab({ client, workbench, setError }: { client: Client; workb
       const { plan_id, ...body } = resultForm;
       const r = await client.post<MeasurementResultDetail>(`/api/full/measurement/${plan_id}/results`, body);
       setResultDetail(r);
+      toast[r.significant ? 'success' : 'info'](r.significant ? `Significant lift: ${r.observed_relative_lift_pct}%` : `Measured ${r.observed_relative_lift_pct}% lift (not significant)`);
       load();
-    } catch (e) { setError(friendlyError(e, 'Recording results failed')); } finally { setBusy(false); }
+    } catch (e) { setError(friendlyError(e, 'Recording results failed')); toast.error('Recording results failed'); } finally { setBusy(false); }
   }
 
   const tone = (r?: string) => (r === 'ready' ? 'ok' : r === 'borderline' ? 'warn' : 'danger');
@@ -997,7 +1089,7 @@ function ConnectorsTab({ client, setError }: TabProps) {
 
   async function sync(id: string) {
     setBusy(id);
-    try { await client.post(`/api/full/connectors/${id}/sync?days=14`, {}); load(); } catch (e) { setError(friendlyError(e, 'Sync failed')); } finally { setBusy(''); }
+    try { const r = await client.post<{ facts_ingested: number }>(`/api/full/connectors/${id}/sync?days=14`, {}); toast.success(`Synced ${num(r.facts_ingested)} facts — reporting is now live`); load(); } catch (e) { setError(friendlyError(e, 'Sync failed')); toast.error('Connector sync failed'); } finally { setBusy(''); }
   }
 
   return (

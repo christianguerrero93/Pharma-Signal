@@ -1453,6 +1453,80 @@ def overview(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     }
 
 
+@app.get("/api/full/insights")
+def insights(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    """AI-style recommendations synthesized from current platform state."""
+    with conn() as db:
+        campaigns = dicts(db.execute("SELECT * FROM campaigns").fetchall())
+        lines = dicts(db.execute("SELECT * FROM line_items").fetchall())
+        supply = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
+        creatives = dicts(db.execute("SELECT * FROM creatives").fetchall())
+        plans = dicts(db.execute("SELECT * FROM measurement_plans").fetchall())
+        audiences = dicts(db.execute("SELECT * FROM audiences").fetchall())
+        connectors = dicts(db.execute("SELECT * FROM connectors").fetchall())
+        results = dicts(db.execute("SELECT * FROM measurement_results").fetchall())
+
+    recs: List[Dict[str, Any]] = []
+
+    def add(priority: str, category: str, title: str, detail: str, tab: str) -> None:
+        recs.append({"priority": priority, "category": category, "title": title, "detail": detail, "tab": tab})
+
+    plans_by_campaign = {p["campaign_id"] for p in plans}
+    if not campaigns:
+        add("high", "Setup", "Create your first campaign", "Start by building a campaign with line items, budgets, and flight dates.", "campaigns")
+    else:
+        for camp in campaigns:
+            if camp["id"] not in plans_by_campaign:
+                add("medium", "Measurement", f"Plan measurement for '{camp['name']}'", "No measurement plan exists — design a script-lift study so the buy can be proven.", "measurement")
+                break
+
+    # Supply path quality
+    for sp in supply:
+        if sp["status"] == "approved" and sp["fraud_risk"] and sp["fraud_risk"] > 1.0:
+            add("high", "Supply", f"Elevated fraud risk on {sp['partner']}", f"{sp['partner']} is approved but shows {sp['fraud_risk']}% fraud risk — review or reduce spend.", "supply")
+    low_working = [sp for sp in supply if sp["working_media_ratio"] < 0.6 and sp["status"] == "approved"]
+    if low_working:
+        add("medium", "Efficiency", "Working-media ratio is low on some paths", f"{len(low_working)} approved supply path(s) put under 60% of spend into working media — prioritize higher-efficiency paths.", "supply")
+
+    # Frequency governance
+    channel_caps: Dict[str, List[int]] = {}
+    camp_by_id = {c["id"]: c for c in campaigns}
+    for line in lines:
+        channel_caps.setdefault(line["channel"], []).append(line["frequency_cap"])
+    pressure = sum(round(sum(v) / len(v), 1) for v in channel_caps.values())
+    if pressure > 8 and len(channel_caps) > 1:
+        add("medium", "Frequency", "Coordinate frequency across channels", f"Combined cap pressure is {round(pressure, 1)} across {len(channel_caps)} channels — set a coordinated global weekly cap so HCPs aren't over-exposed.", "compliance")
+
+    # Creatives / MLR
+    pending = [c for c in creatives if c["mlr_status"] in {"in_review", "changes_requested"}]
+    if pending:
+        add("high", "Compliance", f"{len(pending)} creative(s) awaiting MLR", "Creatives can't serve until MLR-approved. Clear the review queue to unblock delivery.", "creative")
+    no_isi = [c for c in creatives if not c["isi_included"]]
+    if no_isi:
+        add("high", "Compliance", "Creative missing ISI", f"{len(no_isi)} creative(s) lack Important Safety Information — required before serving.", "creative")
+
+    # Connectors / live data
+    synced = [c for c in connectors if c["status"] == "connected"]
+    if connectors and not synced:
+        add("low", "Data", "Connect a live feed", "No connector has synced yet — sync SSP/GA4/Crossix to replace simulated reporting with live data.", "connectors")
+
+    # Measurement readiness + results
+    underpowered = [p for p in plans if p["status"] == "underpowered"]
+    if underpowered:
+        add("medium", "Measurement", "Some studies are underpowered", f"{len(underpowered)} plan(s) won't detect the expected lift — increase exposed/control size or extend the flight.", "measurement")
+    if plans and not results:
+        add("low", "Measurement", "Close the loop with observed results", "You have study designs but no recorded outcomes — record exposed/control conversions to measure real lift.", "measurement")
+
+    # Audience
+    if len([a for a in audiences if a["audience_type"] == "HCP"]) and len(audiences) > 1:
+        add("low", "Audience", "Resolve audience overlap", "Run identity resolution to dedupe overlapping reach into unique addressable reach before planning frequency.", "audiences")
+
+    order = {"high": 0, "medium": 1, "low": 2}
+    recs.sort(key=lambda r: order.get(r["priority"], 3))
+    counts = {"high": sum(1 for r in recs if r["priority"] == "high"), "medium": sum(1 for r in recs if r["priority"] == "medium"), "low": sum(1 for r in recs if r["priority"] == "low")}
+    return {"recommendations": recs, "counts": counts, "generated_at": now_iso()}
+
+
 @app.get("/api/full/audit")
 def list_audit(limit: int = Query(100, ge=1, le=500), user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
     with conn() as db:

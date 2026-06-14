@@ -71,6 +71,10 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   hashing, and enforced role-based access (`admin` / `trader` / `analyst`). Storage
   runs on SQLite by default or **Postgres** when `DATABASE_URL` is set, via a single
   abstraction (`backend/storage.py`).
+- **AI insights & friendly UI** — an Insights engine reads campaigns, supply, creative,
+  frequency, and measurement state and surfaces prioritized next actions. The UI adds an
+  onboarding checklist, toast notifications, loading/empty states, and plain-language
+  hints for ad-tech/pharma jargon.
 
 ### Product experience
 
