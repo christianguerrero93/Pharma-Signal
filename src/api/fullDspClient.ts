@@ -287,6 +287,9 @@ export type FrequencyGovernance = {
 
 export type Overview = { kpis: Record<string, number>; narrative: string; storage_backend?: string };
 
+export type Alert = { severity: 'critical' | 'warning' | 'info'; category: string; message: string; metric: string; value: number };
+export type AlertsData = { alerts: Alert[]; counts: { critical: number; warning: number; info: number }; total: number; generated_at: string };
+
 export type Recommendation = { priority: 'high' | 'medium' | 'low'; category: string; title: string; detail: string; tab: string };
 export type Insights = { recommendations: Recommendation[]; counts: { high: number; medium: number; low: number }; generated_at: string };
 

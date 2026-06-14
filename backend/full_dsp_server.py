@@ -1774,6 +1774,52 @@ def insights(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     return {"recommendations": recs, "counts": counts, "generated_at": now_iso()}
 
 
+@app.get("/api/full/alerts")
+def alerts(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    """Threshold-breach monitoring: surfaces conditions that need attention now."""
+    with conn() as db:
+        lines = dicts(db.execute("SELECT id, name, frequency_cap FROM line_items").fetchall())
+        ledger = dicts(db.execute("SELECT line_item_id, impressions FROM frequency_ledger").fetchall())
+        creatives = dicts(db.execute("SELECT mlr_status FROM creatives").fetchall())
+        supply = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
+        plans = dicts(db.execute("SELECT status FROM measurement_plans").fetchall())
+        audiences = dicts(db.execute("SELECT name, contains_phi FROM audiences").fetchall())
+    out: List[Dict[str, Any]] = []
+
+    def add(severity: str, category: str, message: str, metric: str, value: Any) -> None:
+        out.append({"severity": severity, "category": category, "message": message, "metric": metric, "value": value})
+
+    cap_by_line = {l["id"]: l["frequency_cap"] for l in lines}
+    name_by_line = {l["id"]: l["name"] for l in lines}
+    over_by_line: Dict[str, int] = {}
+    for r in ledger:
+        cap = cap_by_line.get(r["line_item_id"])
+        if cap is not None and int(r["impressions"]) > cap:
+            over_by_line[r["line_item_id"]] = over_by_line.get(r["line_item_id"], 0) + 1
+    for lid, n in over_by_line.items():
+        add("warning", "frequency", f"{name_by_line.get(lid, 'Line item')}: {n} users over the frequency cap ({cap_by_line[lid]})", "over_cap_users", n)
+    for a in audiences:
+        if a["contains_phi"]:
+            add("critical", "compliance", f"Audience '{a['name']}' is flagged as containing PHI", "contains_phi", 1)
+    for sp in supply:
+        if sp["status"] == "approved" and (sp["fraud_risk"] or 0) > 1.0:
+            add("critical", "supply", f"{sp['partner']}: {sp['fraud_risk']}% fraud risk on an approved path", "fraud_risk", sp["fraud_risk"])
+    blocked = sum(1 for c in creatives if c["mlr_status"] != "approved")
+    if blocked:
+        add("warning", "creative", f"{blocked} creative(s) not MLR-approved — cannot serve", "blocked_creatives", blocked)
+    under = sum(1 for p in plans if p["status"] == "underpowered")
+    if under:
+        add("warning", "measurement", f"{under} measurement plan(s) underpowered", "underpowered_plans", under)
+    if supply:
+        awm = sum(s["working_media_ratio"] for s in supply) / len(supply)
+        if awm < 0.6:
+            add("info", "efficiency", f"Average working media {round(awm * 100)}% is below the 60% target", "avg_working_media", round(awm, 3))
+    order = {"critical": 0, "warning": 1, "info": 2}
+    out.sort(key=lambda a: order.get(a["severity"], 3))
+    counts = {s: sum(1 for a in out if a["severity"] == s) for s in ["critical", "warning", "info"]}
+    return {"alerts": out, "counts": counts, "total": len(out), "generated_at": now_iso()}
+
+
 @app.get("/api/full/audit")
 def list_audit(limit: int = Query(100, ge=1, le=500), user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
     with conn() as db:

@@ -87,6 +87,9 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   bidstream runs (a `frequency_ledger`), so caps carry over and the same NPI/household
   isn't over-exposed; view and reset the state per line item.
 - **CSV export** — one-click export of campaigns, audit log, RTB wins, and delivery facts.
+- **Alerts & trends** — a threshold-monitoring engine surfaces breaches (over-cap
+  frequency, supply fraud, un-served creatives, underpowered studies, low working
+  media, PHI) with a nav bell badge; reporting includes daily spend/conversion trend charts.
 
 ### Product experience
 

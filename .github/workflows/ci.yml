@@ -125,7 +125,7 @@ jobs:
           csvr = client.get('/api/full/export?dataset=campaigns', headers=headers)
           assert csvr.status_code == 200 and 'name' in csvr.text, csvr.text
 
-          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels']:
+          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels', '/api/full/alerts']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'
 
