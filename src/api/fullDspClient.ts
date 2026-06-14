@@ -170,7 +170,19 @@ export type Bidstream = {
   targeting_filtered: number;
   unique_reach: number;
   avg_frequency: number;
+  carried_over_users: number;
+  persisted_users: number;
   by_partner: { partner: string; requests: number; wins: number; win_rate: number; est_spend: number }[];
+};
+
+export type FrequencyState = {
+  line_item_id: string;
+  frequency_cap: number;
+  unique_users: number;
+  total_impressions: number;
+  avg_frequency: number;
+  over_cap_users: number;
+  top: { user_key: number; impressions: number }[];
 };
 
 export type ReportSeriesPoint = { date: string; spend: number; impressions: number; clicks: number; conversions: number };

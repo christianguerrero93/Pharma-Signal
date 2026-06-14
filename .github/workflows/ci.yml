@@ -118,6 +118,13 @@ jobs:
           plan = client.post('/api/full/planner', headers=headers, json={'budget': 1000000, 'frequency': 3})
           assert plan.status_code == 200 and plan.json()['totals']['impressions'] > 0, plan.text
 
+          sim = client.post('/api/full/bidstream/simulate', headers=headers, json={'line_item_id': line_id, 'requests': 500, 'seed': 3})
+          assert sim.status_code == 200 and 'carried_over_users' in sim.json(), sim.text
+          fstate = client.get(f'/api/full/frequency/state/{line_id}', headers=headers)
+          assert fstate.status_code == 200 and 'avg_frequency' in fstate.json(), fstate.text
+          csvr = client.get('/api/full/export?dataset=campaigns', headers=headers)
+          assert csvr.status_code == 200 and 'name' in csvr.text, csvr.text
+
           for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'

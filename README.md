@@ -83,6 +83,10 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   preview in the MLR queue.
 - **Media planner** — allocate a budget across channels and forecast impressions,
   blended CPM, and unique reach from the CPM taxonomy.
+- **Persistent frequency governance** — per-user frequency is persisted across
+  bidstream runs (a `frequency_ledger`), so caps carry over and the same NPI/household
+  isn't over-exposed; view and reset the state per line item.
+- **CSV export** — one-click export of campaigns, audit log, RTB wins, and delivery facts.
 
 ### Product experience
 

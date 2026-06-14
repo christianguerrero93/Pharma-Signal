@@ -26,8 +26,10 @@ Run: uvicorn full_dsp_server:app --reload --port 8090
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -464,6 +466,7 @@ CREATE TABLE IF NOT EXISTS measurement_results (id TEXT PRIMARY KEY, plan_id TEX
 CREATE TABLE IF NOT EXISTS connectors (id TEXT PRIMARY KEY, name TEXT, kind TEXT, status TEXT, config_json TEXT, last_sync TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS delivery_facts (id TEXT PRIMARY KEY, connector_id TEXT, source TEXT, fact_date TEXT, campaign_id TEXT, partner TEXT, channel TEXT, impressions INTEGER, clicks INTEGER, conversions INTEGER, spend REAL, created_at TEXT);
 CREATE TABLE IF NOT EXISTS rtb_wins (id TEXT PRIMARY KEY, line_item_id TEXT, request_id TEXT, imp_id TEXT, partner TEXT, bid_price_cpm REAL, clear_price_cpm REAL, status TEXT, ts TEXT);
+CREATE TABLE IF NOT EXISTS frequency_ledger (line_item_id TEXT, user_key INTEGER, impressions INTEGER, last_ts TEXT, PRIMARY KEY (line_item_id, user_key));
 CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
 """
 
@@ -835,6 +838,8 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
         factors = db.execute("SELECT * FROM bid_factors WHERE line_item_id=?", (payload.line_item_id,)).fetchone()
         supply_rows = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
         targeting = _load_targeting(db, payload.line_item_id) if line else None
+        # Load persisted per-user frequency so caps carry across simulation runs.
+        ledger_rows = dicts(db.execute("SELECT user_key, impressions FROM frequency_ledger WHERE line_item_id=?", (payload.line_item_id,)).fetchall()) if line else []
     if not line or not factors:
         raise HTTPException(404, "Line item or bid factors not found")
     if not supply_rows:
@@ -846,7 +851,8 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
     # enforce real per-user frequency caps across the request stream.
     sim_budget = round(payload.requests * line_d["max_bid_cpm"] / 1000 * 0.45, 2)
     user_pool = max(50, payload.requests // 5)
-    freq_seen: Dict[int, int] = {}
+    freq_seen: Dict[int, int] = {int(r["user_key"]): int(r["impressions"]) for r in ledger_rows}
+    starting_users = len(freq_seen)
 
     tally = {"bid": 0, "throttle": 0, "no_bid": 0, "blocked": 0}
     wins, spend_cpm, clearing_sum, second_price_sum, score_sum = 0, 0.0, 0.0, 0.0, 0.0
@@ -930,6 +936,16 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
             for p, v in sorted(by_partner.items(), key=lambda kv: kv[1]["wins"], reverse=True)
         ],
     }
+    summary["carried_over_users"] = starting_users
+    summary["persisted_users"] = len(freq_seen)
+    # Persist the updated per-user frequency so the next run accumulates.
+    ts = now_iso()
+    with conn() as db:
+        for user_key, imps in freq_seen.items():
+            cur = db.execute("UPDATE frequency_ledger SET impressions=?, last_ts=? WHERE line_item_id=? AND user_key=?", (imps, ts, payload.line_item_id, user_key))
+            if cur.rowcount == 0:
+                db.execute("INSERT INTO frequency_ledger VALUES (?, ?, ?, ?)", (payload.line_item_id, user_key, imps, ts))
+        db.commit()
     audit(user["email"], "bidstream_simulate", "line_item", payload.line_item_id, {"requests": payload.requests, "win_rate": summary["win_rate"]})
     return summary
 
@@ -1020,6 +1036,60 @@ def rtb_billing(wid: str):
 def list_rtb_wins(limit: int = Query(50, ge=1, le=500), user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
     with conn() as db:
         return dicts(db.execute("SELECT * FROM rtb_wins ORDER BY ts DESC LIMIT ?", (limit,)).fetchall())
+
+
+@app.get("/api/full/frequency/state/{line_item_id}")
+def frequency_state(line_item_id: str, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    """Persisted cross-run per-user frequency for a line item."""
+    with conn() as db:
+        rows = dicts(db.execute("SELECT user_key, impressions FROM frequency_ledger WHERE line_item_id=? ORDER BY impressions DESC", (line_item_id,)).fetchall())
+        line = db.execute("SELECT frequency_cap FROM line_items WHERE id=?", (line_item_id,)).fetchone()
+    cap = dict(line)["frequency_cap"] if line else 0
+    total = sum(int(r["impressions"]) for r in rows)
+    unique = len(rows)
+    return {
+        "line_item_id": line_item_id, "frequency_cap": cap,
+        "unique_users": unique, "total_impressions": total,
+        "avg_frequency": round(total / max(unique, 1), 2),
+        "over_cap_users": sum(1 for r in rows if int(r["impressions"]) > cap),
+        "top": [{"user_key": int(r["user_key"]), "impressions": int(r["impressions"])} for r in rows[:10]],
+    }
+
+
+@app.post("/api/full/frequency/state/{line_item_id}/reset")
+def reset_frequency_state(line_item_id: str, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    with conn() as db:
+        db.execute("DELETE FROM frequency_ledger WHERE line_item_id=?", (line_item_id,))
+        db.commit()
+    audit(user["email"], "frequency_reset", "line_item", line_item_id, {})
+    return {"line_item_id": line_item_id, "reset": True}
+
+
+EXPORT_QUERIES = {
+    "campaigns": "SELECT id, name, brand, indication, audience_type, objective, budget, status, flight_start, flight_end FROM campaigns ORDER BY created_at DESC",
+    "audit": "SELECT ts, actor, action, entity_type, entity_id FROM audit_events ORDER BY ts DESC LIMIT 2000",
+    "wins": "SELECT ts, line_item_id, partner, bid_price_cpm, clear_price_cpm, status FROM rtb_wins ORDER BY ts DESC LIMIT 5000",
+    "delivery": "SELECT fact_date, source, campaign_id, partner, channel, impressions, clicks, conversions, spend FROM delivery_facts ORDER BY fact_date DESC LIMIT 5000",
+}
+
+
+@app.get("/api/full/export")
+def export_csv(dataset: str = Query(...), user: Dict[str, Any] = Depends(current_user)) -> Response:
+    """Export a dataset as CSV (campaigns | audit | wins | delivery)."""
+    query = EXPORT_QUERIES.get(dataset)
+    if not query:
+        raise HTTPException(404, f"Unknown dataset. Options: {sorted(EXPORT_QUERIES)}")
+    with conn() as db:
+        rows = dicts(db.execute(query).fetchall())
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    if rows:
+        writer.writerow(list(rows[0].keys()))
+        for row in rows:
+            writer.writerow(list(row.values()))
+    else:
+        writer.writerow(["(no rows)"])
+    return Response(content=buffer.getvalue(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename=pharma-signal-{dataset}.csv"})
 
 
 # ---------------------------------------------------------------------------
