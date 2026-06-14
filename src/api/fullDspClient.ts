@@ -272,7 +272,10 @@ export type FrequencyGovernance = {
   note: string;
 };
 
-export type Overview = { kpis: Record<string, number>; narrative: string };
+export type Overview = { kpis: Record<string, number>; narrative: string; storage_backend?: string };
+
+export type Recommendation = { priority: 'high' | 'medium' | 'low'; category: string; title: string; detail: string; tab: string };
+export type Insights = { recommendations: Recommendation[]; counts: { high: number; medium: number; low: number }; generated_at: string };
 
 export function friendlyError(err: unknown, fallback: string): string {
   const message = err instanceof Error ? err.message : String(err || fallback);
