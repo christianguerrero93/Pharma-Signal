@@ -125,6 +125,14 @@ jobs:
           csvr = client.get('/api/full/export?dataset=campaigns', headers=headers)
           assert csvr.status_code == 200 and 'name' in csvr.text, csvr.text
 
+          users = client.get('/api/full/users', headers=headers)
+          assert users.status_code == 200 and len(users.json()) >= 3, users.text
+          new_user = client.post('/api/full/users', headers=headers, json={'email': 'ci-user@pharmasignal.local', 'name': 'CI User', 'role': 'analyst', 'password': 'secret123'})
+          assert new_user.status_code == 200, new_user.text
+          assert client.delete(f"/api/full/users/{new_user.json()['id']}", headers=headers).json()['deleted'] is True
+          ehr = [s for s in client.get('/api/full/supply-paths/optimize', headers=headers).json()['supply_paths'] if s['channel'] == 'EHR']
+          assert len(ehr) >= 2, 'expected EHR point-of-care inventory'
+
           for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels', '/api/full/alerts']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'

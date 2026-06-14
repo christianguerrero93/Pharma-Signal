@@ -47,9 +47,9 @@ const starterBidFactors: BidFactors = {
 
 type TabKey =
   | 'overview' | 'insights' | 'campaigns' | 'audiences' | 'creative' | 'supply'
-  | 'bidder' | 'measurement' | 'optimization' | 'reporting' | 'connectors' | 'compliance' | 'audit';
+  | 'bidder' | 'measurement' | 'optimization' | 'reporting' | 'connectors' | 'compliance' | 'team' | 'audit';
 
-const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
+const TABS: { key: TabKey; label: string; icon: ReactNode; adminOnly?: boolean }[] = [
   { key: 'overview', label: 'Overview', icon: <LayoutDashboard size={16} /> },
   { key: 'insights', label: 'Insights', icon: <Lightbulb size={16} /> },
   { key: 'campaigns', label: 'Campaigns', icon: <ClipboardList size={16} /> },
@@ -62,6 +62,7 @@ const TABS: { key: TabKey; label: string; icon: ReactNode }[] = [
   { key: 'reporting', label: 'Reporting', icon: <Gauge size={16} /> },
   { key: 'connectors', label: 'Connectors', icon: <Plug size={16} /> },
   { key: 'compliance', label: 'Compliance', icon: <ShieldCheck size={16} /> },
+  { key: 'team', label: 'Team', icon: <Users size={16} />, adminOnly: true },
   { key: 'audit', label: 'Audit', icon: <Activity size={16} /> },
 ];
 
@@ -224,7 +225,7 @@ export default function EnterpriseDSPApp() {
       </nav>
 
       <div className="tab-bar">
-        {TABS.map((t) => (
+        {TABS.filter((t) => !t.adminOnly || user.role === 'admin').map((t) => (
           <button key={t.key} className={`tab-button ${tab === t.key ? 'active' : ''}`} onClick={() => setTab(t.key)}>
             {t.icon}<span>{t.label}</span>
           </button>
@@ -245,6 +246,7 @@ export default function EnterpriseDSPApp() {
       {tab === 'reporting' && <ReportingTab client={client} setError={setError} />}
       {tab === 'connectors' && <ConnectorsTab client={client} setError={setError} />}
       {tab === 'compliance' && <ComplianceTab client={client} setError={setError} />}
+      {tab === 'team' && user.role === 'admin' && <TeamTab client={client} self={user} setError={setError} />}
       {tab === 'audit' && <AuditTab workbench={workbench} />}
       <ToastContainer />
     </main>
@@ -1367,6 +1369,59 @@ function ComplianceTab({ client, setError }: TabProps) {
             <div key={i} className="kv-row"><span><Badge tone={sevTone(f.severity)}>{f.severity}</Badge> {f.area} · <strong>{f.entity}</strong></span><span>{f.issue}</span></div>
           ))}
           {!scan?.findings.length && <p>No open findings — all controls passing.</p>}
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Team (admin-only user management)
+// ---------------------------------------------------------------------------
+function TeamTab({ client, self, setError }: { client: Client; self: User; setError: (m: string) => void }) {
+  const [users, setUsers] = useState<User[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ email: '', name: '', role: 'trader', password: '' });
+  const load = useCallback(() => client.get<User[]>('/api/full/users').then(setUsers).catch((e) => setError(friendlyError(e, 'Load users failed'))), [client, setError]);
+  useEffect(() => { load(); }, [load]);
+
+  async function createUser(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try { await client.post('/api/full/users', form); toast.success(`Added ${form.email}`); setForm({ email: '', name: '', role: 'trader', password: '' }); load(); } catch (err) { setError(friendlyError(err, 'Create user failed')); toast.error('Create user failed'); } finally { setBusy(false); }
+  }
+  async function changeRole(id: string, role: string) {
+    try { await client.put(`/api/full/users/${id}/role`, { role }); toast.success('Role updated'); load(); } catch (e) { setError(friendlyError(e, 'Role update failed')); toast.error('Role update failed'); }
+  }
+  async function removeUser(id: string) {
+    try { await client.request(`/api/full/users/${id}`, { method: 'DELETE' }); toast.success('User removed'); load(); } catch (e) { setError(friendlyError(e, 'Delete failed')); toast.error('Delete failed'); }
+  }
+
+  return (
+    <>
+      <form className="dsp-panel" onSubmit={createUser}>
+        <div className="panel-title"><div><p className="eyebrow">Team</p><h2>Invite a user</h2></div><Users /></div>
+        <div className="form-grid two-col">
+          <label>Email<input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="user@pharmasignal.local" /></label>
+          <label>Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label>
+          <label>Role<select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>{['admin', 'trader', 'analyst'].map((r) => <option key={r}>{r}</option>)}</select></label>
+          <label>Password<input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="min 6 characters" /></label>
+        </div>
+        <small>Roles — admin: full access · trader: build & buy · analyst: MLR review & analytics.</small>
+        <button className="primary-button" disabled={busy || !form.email || !form.name || form.password.length < 6}>Add user</button>
+      </form>
+
+      <Panel eyebrow="Members" title="Team & roles" icon={<Users />}>
+        <div className="data-table">
+          <div className="data-head team-cols"><span>User</span><span>Role</span><span>Created</span><span></span></div>
+          {users.map((u) => (
+            <div className="data-row team-cols" key={u.id}>
+              <div><strong>{u.name}</strong><small>{u.email}{u.id === self.id ? ' · you' : ''}</small></div>
+              <span><select value={u.role} disabled={u.id === self.id} onChange={(e) => changeRole(u.id, e.target.value)}>{['admin', 'trader', 'analyst'].map((r) => <option key={r}>{r}</option>)}</select></span>
+              <span>{u.created_at ? new Date(u.created_at).toLocaleDateString() : '—'}</span>
+              <span>{u.id !== self.id ? <button type="button" className="mini danger" onClick={() => removeUser(u.id)}>Remove</button> : <Badge tone="muted">current</Badge>}</span>
+            </div>
+          ))}
         </div>
       </Panel>
     </>
