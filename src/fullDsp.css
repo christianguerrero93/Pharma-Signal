@@ -464,3 +464,29 @@ button.mini.danger { border-color: rgba(251, 113, 133, 0.4); color: #fda4af; }
 /* Media planner table */
 .plan2-cols { grid-template-columns: 1.4fr 0.8fr 1.1fr 0.8fr 1.2fr 1.2fr; }
 @media (max-width: 1000px) { .plan2-cols { grid-template-columns: 1fr; } }
+
+/* Alert bell */
+.alert-bell { position: relative; padding: 11px 13px; }
+.alert-badge {
+  background: var(--warning);
+  border-radius: 999px;
+  color: #1a1205;
+  font-size: 0.66rem;
+  font-weight: 900;
+  min-width: 17px;
+  padding: 1px 5px;
+  position: absolute;
+  right: 2px;
+  top: 0;
+}
+.alert-badge.crit { background: var(--danger); color: #2a0a12; }
+
+/* Trend chart */
+.trend-grid { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; margin-top: 18px; }
+.trend { background: rgba(2, 6, 23, 0.42); border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px; }
+.trend-head { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; }
+.trend-head span { color: var(--text-muted); font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+.trend-head strong { font-size: 1.1rem; }
+.trend-svg { display: block; height: 120px; margin: 8px 0 4px; width: 100%; }
+.trend-axis { color: var(--text-muted); display: flex; font-size: 0.72rem; font-weight: 700; justify-content: space-between; }
+@media (max-width: 860px) { .trend-grid { grid-template-columns: 1fr; } }

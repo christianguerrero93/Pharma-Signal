@@ -1,12 +1,12 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, ArrowRight, BadgeCheck, Boxes, CheckCircle2, Circle, ClipboardList, Download, Gauge, Info, LayoutDashboard,
+  Activity, ArrowRight, BadgeCheck, Bell, Boxes, CheckCircle2, Circle, ClipboardList, Download, Gauge, Info, LayoutDashboard,
   Lightbulb, Loader2, Lock, PencilRuler, Plug, RefreshCw, Radio, ShieldCheck, SlidersHorizontal, Target,
   TrendingUp, Users, Zap,
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
-  Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
+  AlertsData, Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
   Creative, Deal, Forecast, FrequencyGovernance, FrequencyState, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
   Overview, Planner, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
   Targeting, User, Workbench,
@@ -78,6 +78,30 @@ function Loading({ label = 'Loading…' }: { label?: string }) {
   return <div className="loading"><Loader2 size={18} className="spin" /><span>{label}</span></div>;
 }
 
+// Lightweight dependency-free SVG area+line chart.
+function TrendChart({ points, label, color = 'var(--accent)' }: { points: { date: string; value: number }[]; label: string; color?: string }) {
+  if (points.length < 2) return <p className="muted-label">Not enough data to chart.</p>;
+  const w = 760;
+  const h = 160;
+  const pad = 6;
+  const max = Math.max(...points.map((p) => p.value), 1);
+  const stepX = (w - pad * 2) / (points.length - 1);
+  const xy = points.map((p, i) => [pad + i * stepX, h - pad - (p.value / max) * (h - pad * 2)] as const);
+  const line = xy.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const area = `${line} L${xy[xy.length - 1][0].toFixed(1)},${h - pad} L${xy[0][0].toFixed(1)},${h - pad} Z`;
+  return (
+    <div className="trend">
+      <div className="trend-head"><span>{label}</span><strong>{max >= 1000 ? num(max) : max}</strong></div>
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="trend-svg" role="img" aria-label={label}>
+        <path d={area} fill={color} opacity="0.14" />
+        <path d={line} fill="none" stroke={color} strokeWidth="2" />
+        {xy.map(([x, y], i) => <circle key={i} cx={x} cy={y} r="2" fill={color} />)}
+      </svg>
+      <div className="trend-axis"><span>{points[0].date.slice(5)}</span><span>{points[points.length - 1].date.slice(5)}</span></div>
+    </div>
+  );
+}
+
 function EmptyState({ title, hint, cta, onCta }: { title: string; hint?: string; cta?: string; onCta?: () => void }) {
   return (
     <div className="empty-state">
@@ -114,6 +138,7 @@ export default function EnterpriseDSPApp() {
 
   const [workbench, setWorkbench] = useState<Workbench | null>(null);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [alerts, setAlerts] = useState<AlertsData | null>(null);
 
   const client = useMemo(() => createClient(() => token), [token]);
 
@@ -121,12 +146,14 @@ export default function EnterpriseDSPApp() {
     if (!token) return;
     setBusy(true);
     try {
-      const [wb, ov] = await Promise.all([
+      const [wb, ov, al] = await Promise.all([
         client.get<Workbench>('/api/full/workbench'),
         client.get<Overview>('/api/full/overview'),
+        client.get<AlertsData>('/api/full/alerts'),
       ]);
       setWorkbench(wb);
       setOverview(ov);
+      setAlerts(al);
       setUser(wb.user);
       setError('');
     } catch (err) {
@@ -188,6 +215,9 @@ export default function EnterpriseDSPApp() {
         <div className="brand-lockup"><div className="brand-mark">PS</div><div><p className="eyebrow">Enterprise DSP</p><strong>Pharma Signal Command OS</strong></div></div>
         <div className="nav-actions">
           <span>{user.email} · {user.role}</span>
+          <button className="alert-bell" onClick={() => setTab('overview')} title={`${alerts?.total ?? 0} alerts`}>
+            <Bell size={16} />{alerts && alerts.total > 0 ? <span className={`alert-badge ${alerts.counts.critical ? 'crit' : ''}`}>{alerts.total}</span> : null}
+          </button>
           <button onClick={loadCore} disabled={busy}><RefreshCw size={16} /> Refresh</button>
           <button onClick={logout}>Logout</button>
         </div>
@@ -203,7 +233,7 @@ export default function EnterpriseDSPApp() {
 
       {error && <div className="error-box wide">{error}</div>}
 
-      {tab === 'overview' && <OverviewTab overview={overview} workbench={workbench} client={client} setTab={setTab} />}
+      {tab === 'overview' && <OverviewTab overview={overview} workbench={workbench} client={client} setTab={setTab} alerts={alerts} />}
       {tab === 'insights' && <InsightsTab client={client} setTab={setTab} setError={setError} />}
       {tab === 'campaigns' && <CampaignsTab client={client} workbench={workbench} reload={loadCore} setError={setError} />}
       {tab === 'audiences' && <AudiencesTab client={client} setError={setError} />}
@@ -227,7 +257,7 @@ type TabProps = { client: Client; setError: (m: string) => void };
 // ---------------------------------------------------------------------------
 // Overview
 // ---------------------------------------------------------------------------
-function OverviewTab({ overview, workbench, client, setTab }: { overview: Overview | null; workbench: Workbench | null; client: Client; setTab: (t: TabKey) => void }) {
+function OverviewTab({ overview, workbench, client, setTab, alerts }: { overview: Overview | null; workbench: Workbench | null; client: Client; setTab: (t: TabKey) => void; alerts: AlertsData | null }) {
   const [compliance, setCompliance] = useState<Compliance | null>(null);
   const [freq, setFreq] = useState<FrequencyGovernance | null>(null);
   useEffect(() => {
@@ -297,6 +327,16 @@ function OverviewTab({ overview, workbench, client, setTab }: { overview: Overvi
       <section className="metric-grid">
         {cards.map((c) => <div className="metric-card" key={c.label}><span>{c.label}{c.hint ? <Hint text={c.hint} /> : null}</span><strong>{c.value}</strong></div>)}
       </section>
+
+      {alerts && alerts.total > 0 && (
+        <Panel eyebrow={`${alerts.counts.critical} critical · ${alerts.counts.warning} warning · ${alerts.counts.info} info`} title="Active alerts" icon={<Bell />}>
+          <div className="table-list">
+            {alerts.alerts.map((a, i) => (
+              <div key={i} className="kv-row"><span><Badge tone={a.severity === 'critical' ? 'danger' : a.severity === 'warning' ? 'warn' : 'accent'}>{a.severity}</Badge> {a.category}</span><span>{a.message}</span></div>
+            ))}
+          </div>
+        </Panel>
+      )}
 
       <div className="dsp-grid two">
         <Panel eyebrow="Frequency governance" title="Cross-channel HCP + DTC coordination" icon={<Gauge />}>
@@ -1178,6 +1218,15 @@ function ReportingTab({ client, setError }: TabProps) {
   useEffect(() => { load(days); }, [load, days]);
 
   const p = report?.portfolio;
+  const series = useMemo(() => {
+    if (!report) return [] as { date: string; spend: number; conversions: number }[];
+    const byDate = new Map<string, { spend: number; conversions: number }>();
+    report.campaigns.forEach((c) => c.series.forEach((s) => {
+      const cur = byDate.get(s.date) || { spend: 0, conversions: 0 };
+      cur.spend += s.spend; cur.conversions += s.conversions; byDate.set(s.date, cur);
+    }));
+    return [...byDate.keys()].sort().map((d) => ({ date: d, ...byDate.get(d)! }));
+  }, [report]);
   return (
     <>
       <Panel eyebrow="Delivery & outcomes" title="Portfolio performance" icon={<Gauge />}
@@ -1190,6 +1239,12 @@ function ReportingTab({ client, setError }: TabProps) {
           <div className="metric-card"><span>CTR</span><strong>{pct1(p?.ctr || 0)}</strong></div>
           <div className="metric-card"><span>CPA</span><strong>{money2(p?.cpa || 0)}</strong></div>
         </div>
+        {series.length > 1 && (
+          <div className="trend-grid">
+            <TrendChart points={series.map((s) => ({ date: s.date, value: s.spend }))} label="Daily spend" />
+            <TrendChart points={series.map((s) => ({ date: s.date, value: s.conversions }))} label="Daily conversions" color="var(--success)" />
+          </div>
+        )}
       </Panel>
 
       {report?.campaigns.map((c) => {
