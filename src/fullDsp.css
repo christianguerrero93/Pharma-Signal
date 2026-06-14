@@ -490,3 +490,7 @@ button.mini.danger { border-color: rgba(251, 113, 133, 0.4); color: #fda4af; }
 .trend-svg { display: block; height: 120px; margin: 8px 0 4px; width: 100%; }
 .trend-axis { color: var(--text-muted); display: flex; font-size: 0.72rem; font-weight: 700; justify-content: space-between; }
 @media (max-width: 860px) { .trend-grid { grid-template-columns: 1fr; } }
+
+/* Team / user management */
+.team-cols { grid-template-columns: 2.4fr 1fr 1fr 0.9fr; }
+@media (max-width: 760px) { .team-cols { grid-template-columns: 1fr; } }

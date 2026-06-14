@@ -90,6 +90,10 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
 - **Alerts & trends** — a threshold-monitoring engine surfaces breaches (over-cap
   frequency, supply fraud, un-served creatives, underpowered studies, low working
   media, PHI) with a nav bell badge; reporting includes daily spend/conversion trend charts.
+- **Team management** — an admin-only Team tab to invite users, assign roles
+  (admin / trader / analyst), and remove members, with self-protection guards.
+- **EHR / point-of-care inventory** — endemic EHR supply paths (OptimizeRx-style)
+  and an NPI-authenticated point-of-care HCP audience.
 
 ### Product experience
 

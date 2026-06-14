@@ -448,6 +448,17 @@ class PlannerRequest(BaseModel):
     channels: List[PlannerChannel] = Field(default_factory=list)
 
 
+class UserCreate(BaseModel):
+    email: str
+    name: str
+    role: str = Field(pattern="^(admin|trader|analyst)$")
+    password: str = Field(min_length=6)
+
+
+class RoleUpdate(BaseModel):
+    role: str = Field(pattern="^(admin|trader|analyst)$")
+
+
 # ---------------------------------------------------------------------------
 # Database bootstrap + seed
 # ---------------------------------------------------------------------------
@@ -489,6 +500,13 @@ def init_db() -> None:
             ]
             for row in seed_supply:
                 db.execute("INSERT INTO supply_paths VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), *row))
+        # EHR / point-of-care endemic inventory (idempotent: added to existing DBs too).
+        if not db.execute("SELECT 1 FROM supply_paths WHERE deal_id=?", ("EHR-POC-ENDO-01",)).fetchone():
+            for row in [
+                ("OptimizeRx EHR Network", "EHR", "EHR-POC-ENDO-01", "Direct", 32.0, 95, 0.2, 88, 0.74, 95, "approved"),
+                ("Point-of-Care Health Network", "EHR", "EHR-POC-ONC-02", "Direct", 28.0, 93, 0.3, 84, 0.72, 92, "approved"),
+            ]:
+                db.execute("INSERT INTO supply_paths VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), *row))
         if not db.execute("SELECT 1 FROM audiences LIMIT 1").fetchone():
             seed_aud = [
                 ("Endocrinologists - T1D Treaters", "HCP", "NPI-verified endocrinologists with recent T1D Rx activity", 48200, 48200, 0.91, 12.5, "weekly", 0, "active"),
@@ -500,6 +518,8 @@ def init_db() -> None:
             ]
             for row in seed_aud:
                 db.execute("INSERT INTO audiences VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), *row, now_iso()))
+        if not db.execute("SELECT 1 FROM audiences WHERE name=?", ("EHR Point-of-Care HCPs",)).fetchone():
+            db.execute("INSERT INTO audiences VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (str(uuid4()), "EHR Point-of-Care HCPs", "HCP", "NPI-authenticated HCPs reachable at point of care via EHR", 58000, 58000, 0.97, 22.0, "real-time", 0, "active", now_iso()))
         if not db.execute("SELECT 1 FROM deals LIMIT 1").fetchone():
             seed_deals = [
                 ("PubMatic", "PM-PMP-ENDO-44", "PMP", "Display", 7.5, 0.82, "active"),
@@ -554,6 +574,50 @@ def login(payload: LoginRequest) -> Dict[str, Any]:
 @app.get("/api/full/auth/me")
 def me(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     return user
+
+
+@app.get("/api/full/users")
+def list_users(user: Dict[str, Any] = Depends(roles("admin"))) -> List[Dict[str, Any]]:
+    with conn() as db:
+        return dicts(db.execute("SELECT id, email, name, role, created_at FROM users ORDER BY created_at").fetchall())
+
+
+@app.post("/api/full/users")
+def create_user(payload: UserCreate, user: Dict[str, Any] = Depends(roles("admin"))) -> Dict[str, Any]:
+    with conn() as db:
+        if db.execute("SELECT 1 FROM users WHERE lower(email)=lower(?)", (payload.email,)).fetchone():
+            raise HTTPException(400, "A user with that email already exists")
+        user_id = str(uuid4())
+        db.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)", (user_id, payload.email, hash_password(payload.password), payload.name, payload.role, now_iso()))
+        db.commit()
+    audit(user["email"], "user_create", "user", user_id, {"email": payload.email, "role": payload.role})
+    return {"id": user_id, "email": payload.email, "name": payload.name, "role": payload.role}
+
+
+@app.put("/api/full/users/{user_id}/role")
+def update_user_role(user_id: str, payload: RoleUpdate, user: Dict[str, Any] = Depends(roles("admin"))) -> Dict[str, Any]:
+    if user_id == user["id"] and payload.role != "admin":
+        raise HTTPException(400, "You cannot remove your own admin role")
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone():
+            raise HTTPException(404, "User not found")
+        db.execute("UPDATE users SET role=? WHERE id=?", (payload.role, user_id))
+        db.commit()
+    audit(user["email"], "user_role_update", "user", user_id, {"role": payload.role})
+    return {"id": user_id, "role": payload.role}
+
+
+@app.delete("/api/full/users/{user_id}")
+def delete_user(user_id: str, user: Dict[str, Any] = Depends(roles("admin"))) -> Dict[str, Any]:
+    if user_id == user["id"]:
+        raise HTTPException(400, "You cannot delete your own account")
+    with conn() as db:
+        if not db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone():
+            raise HTTPException(404, "User not found")
+        db.execute("DELETE FROM users WHERE id=?", (user_id,))
+        db.commit()
+    audit(user["email"], "user_delete", "user", user_id, {})
+    return {"id": user_id, "deleted": True}
 
 
 # ---------------------------------------------------------------------------
