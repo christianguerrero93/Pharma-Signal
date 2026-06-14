@@ -115,6 +115,9 @@ jobs:
           got = client.get(f'/api/full/line-items/{line_id}/targeting', headers=headers)
           assert got.status_code == 200 and got.json()['devices'] == ['ctv'], got.text
 
+          plan = client.post('/api/full/planner', headers=headers, json={'budget': 1000000, 'frequency': 3})
+          assert plan.status_code == 200 and plan.json()['totals']['impressions'] > 0, plan.text
+
           for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'

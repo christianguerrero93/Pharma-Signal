@@ -460,3 +460,7 @@ button.mini.danger { border-color: rgba(251, 113, 133, 0.4); color: #fda4af; }
   .creative-main { grid-template-columns: 1fr; }
   .daypart-grid { grid-template-columns: repeat(8, 1fr); }
 }
+
+/* Media planner table */
+.plan2-cols { grid-template-columns: 1.4fr 0.8fr 1.1fr 0.8fr 1.2fr 1.2fr; }
+@media (max-width: 1000px) { .plan2-cols { grid-template-columns: 1fr; } }

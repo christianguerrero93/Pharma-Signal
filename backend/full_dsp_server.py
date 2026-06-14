@@ -390,6 +390,7 @@ class ORTBGeo(BaseModel):
 class ORTBDevice(BaseModel):
     ua: Optional[str] = None
     ip: Optional[str] = None
+    devicetype: Optional[int] = None   # OpenRTB: 2=desktop, 4=mobile, 5=tablet, 3/7=ctv
     geo: Optional[ORTBGeo] = None
 
 
@@ -432,6 +433,17 @@ class TargetingUpdate(BaseModel):
     dayparts: List[int] = Field(default_factory=list)   # hours of day, 0-23
     brand_safety: str = Field(default="standard", pattern="^(standard|strict|pharma_sensitive)$")
     viewability_target: float = Field(default=0.7, ge=0, le=1)
+
+
+class PlannerChannel(BaseModel):
+    channel: str
+    pct: float = Field(ge=0, le=1)
+
+
+class PlannerRequest(BaseModel):
+    budget: float = Field(gt=0)
+    frequency: float = Field(default=3.0, ge=1, le=20)
+    channels: List[PlannerChannel] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +625,37 @@ def list_channels(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any
     return {"channels": CHANNELS, "devices": DEVICE_TYPES, "brand_safety_tiers": BRAND_SAFETY_TIERS}
 
 
+@app.post("/api/full/planner")
+def media_planner(payload: PlannerRequest, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    """Allocate budget across channels and forecast impressions / reach using the CPM taxonomy."""
+    cmap = {c["id"]: c for c in CHANNELS}
+    chans = payload.channels
+    if not chans:
+        default = ["Display", "Native", "CTV", "Video"]
+        chans = [PlannerChannel(channel=c, pct=round(1 / len(default), 4)) for c in default]
+    total_pct = sum(c.pct for c in chans) or 1.0
+    rows, tot_spend, tot_imps = [], 0.0, 0
+    for c in chans:
+        meta = cmap.get(c.channel)
+        if not meta:
+            raise HTTPException(400, f"Unknown channel: {c.channel}")
+        norm = c.pct / total_pct
+        spend = round(payload.budget * norm, 2)
+        cpm = (meta["typical_cpm"][0] + meta["typical_cpm"][1]) / 2
+        imps = int(spend / cpm * 1000)
+        rows.append({"channel": c.channel, "pct": round(norm, 4), "spend": spend, "cpm": cpm, "impressions": imps, "est_reach": int(imps / max(payload.frequency, 1))})
+        tot_spend += spend
+        tot_imps += imps
+    return {
+        "budget": payload.budget, "frequency": payload.frequency, "channels": rows,
+        "totals": {
+            "spend": round(tot_spend, 2), "impressions": tot_imps,
+            "blended_cpm": round(tot_spend / max(tot_imps, 1) * 1000, 2),
+            "est_unique_reach": int(tot_imps / max(payload.frequency, 1)),
+        },
+    }
+
+
 def _targeting_defaults(line_item_id: str) -> Dict[str, Any]:
     return {"line_item_id": line_item_id, "devices": [], "geos": [], "dayparts": [], "brand_safety": "standard", "viewability_target": 0.7, "updated_at": None}
 
@@ -720,6 +763,44 @@ def _score_impression(factors: Dict[str, Any], line: Dict[str, Any], *, audience
     return {"decision": decision, "weighted_score": weighted_score, "bid_cpm": 0 if clearing is None else shaded_bid, "clearing_price_cpm": clearing, "guardrails": guardrails}
 
 
+ORTB_DEVICE_MAP = {2: "desktop", 4: "mobile", 1: "mobile", 5: "tablet", 3: "ctv", 7: "ctv", 6: "dooh"}
+
+
+def _load_targeting(db, line_item_id: str) -> Dict[str, Any]:
+    row = db.execute("SELECT * FROM line_item_targeting WHERE line_item_id=?", (line_item_id,)).fetchone()
+    if not row:
+        return {"devices": [], "geos": [], "dayparts": [], "brand_safety": "standard", "viewability_target": 0.0}
+    row = dict(row)
+    return {
+        "devices": json.loads(row["devices"] or "[]"),
+        "geos": json.loads(row["geos"] or "[]"),
+        "dayparts": json.loads(row["dayparts"] or "[]"),
+        "brand_safety": row["brand_safety"],
+        "viewability_target": row["viewability_target"] or 0.0,
+    }
+
+
+def _targeting_block(targeting: Dict[str, Any], *, device: Optional[str], geo: Optional[str], hour: int, supply: Dict[str, Any]) -> List[str]:
+    """Return block reasons if an impression fails the line item's targeting (empty = passes)."""
+    reasons: List[str] = []
+    if targeting["devices"] and device and device not in targeting["devices"]:
+        reasons.append(f"device '{device}' not in targeting")
+    if targeting["geos"] and geo:
+        if not any(geo.upper() in g.upper() or g.upper() in geo.upper() for g in targeting["geos"]):
+            reasons.append(f"geo '{geo}' not in targeting")
+    if targeting["dayparts"] and hour not in targeting["dayparts"]:
+        reasons.append(f"hour {hour} outside dayparts")
+    view = (supply.get("viewability") or 0) / 100.0
+    if targeting["viewability_target"] and view < targeting["viewability_target"]:
+        reasons.append("below viewability floor")
+    fraud = supply.get("fraud_risk") or 0
+    if targeting["brand_safety"] == "pharma_sensitive" and fraud > 0.8:
+        reasons.append("brand safety (pharma-sensitive): fraud risk")
+    elif targeting["brand_safety"] == "strict" and fraud > 1.5:
+        reasons.append("brand safety (strict): fraud risk")
+    return reasons
+
+
 @app.post("/api/full/auction/evaluate")
 def evaluate_auction(payload: AuctionEvaluateRequest, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
     with conn() as db:
@@ -753,11 +834,13 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
         line = db.execute("SELECT * FROM line_items WHERE id=?", (payload.line_item_id,)).fetchone()
         factors = db.execute("SELECT * FROM bid_factors WHERE line_item_id=?", (payload.line_item_id,)).fetchone()
         supply_rows = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
+        targeting = _load_targeting(db, payload.line_item_id) if line else None
     if not line or not factors:
         raise HTTPException(404, "Line item or bid factors not found")
     if not supply_rows:
         raise HTTPException(400, "No supply paths configured")
     factors_d, line_d = dict(factors), dict(line)
+    geo_pool = ["US-CA", "US-NY", "US-TX", "US-FL", "US-IL"]
 
     # Pacing budget for this simulation window, and a modeled user pool so we can
     # enforce real per-user frequency caps across the request stream.
@@ -767,7 +850,7 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
 
     tally = {"bid": 0, "throttle": 0, "no_bid": 0, "blocked": 0}
     wins, spend_cpm, clearing_sum, second_price_sum, score_sum = 0, 0.0, 0.0, 0.0, 0.0
-    frequency_capped, pace_throttled = 0, 0
+    frequency_capped, pace_throttled, targeting_filtered = 0, 0, 0
     by_partner: Dict[str, Dict[str, Any]] = {}
 
     for i in range(payload.requests):
@@ -775,6 +858,14 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
         uid = rng.randrange(user_pool)
         seen = freq_seen.get(uid, 0)
         contains_phi = rng.random() < payload.phi_leak_rate
+        # Targeting filter (devices / geo / dayparts / brand safety / viewability).
+        if targeting:
+            req_device = rng.choice(DEVICE_TYPES)
+            req_geo = rng.choice(geo_pool)
+            req_hour = rng.randrange(24)
+            if _targeting_block(targeting, device=req_device, geo=req_geo, hour=req_hour, supply=supply):
+                targeting_filtered += 1
+                continue
         scored = _score_impression(
             factors_d, line_d,
             audience_quality=rng.uniform(55, 98), supply_quality=supply["outcome_score"], outcome_signal=rng.uniform(45, 95),
@@ -831,6 +922,7 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
         "phi_blocked": tally["blocked"],
         "frequency_capped": frequency_capped,
         "pace_throttled": pace_throttled,
+        "targeting_filtered": targeting_filtered,
         "unique_reach": unique_reach,
         "avg_frequency": round(total_imps / max(unique_reach, 1), 2),
         "by_partner": [
@@ -852,19 +944,33 @@ def rtb_bid(req: ORTBBidRequest, line_item_id: str = Query(...), user: Dict[str,
         line = db.execute("SELECT * FROM line_items WHERE id=?", (line_item_id,)).fetchone()
         factors = db.execute("SELECT * FROM bid_factors WHERE line_item_id=?", (line_item_id,)).fetchone()
         supply = db.execute("SELECT * FROM supply_paths WHERE status='approved' ORDER BY outcome_score DESC LIMIT 1").fetchone()
+        targeting = _load_targeting(db, line_item_id) if line else None
     if not line or not factors:
         raise HTTPException(404, "Line item or bid factors not found")
     line, factors = dict(line), dict(factors)
-    supply = dict(supply) if supply else {"partner": "OpenMarket", "bid_floor_cpm": 1.0, "outcome_score": 78, "working_media_ratio": 0.6, "status": "approved"}
+    supply = dict(supply) if supply else {"partner": "OpenMarket", "bid_floor_cpm": 1.0, "outcome_score": 78, "working_media_ratio": 0.6, "viewability": 70, "fraud_risk": 0.5, "status": "approved"}
     rng = random.Random(hash(req.id) & 0xFFFFFFFF)
     geo_ok = True
-    if req.device and req.device.geo and req.device.geo.country:
-        geo_ok = req.device.geo.country.upper() in {"USA", "US"}
+    req_geo, req_device = None, None
+    if req.device:
+        if req.device.geo:
+            req_geo = req.device.geo.region or req.device.geo.country
+            if req.device.geo.country:
+                geo_ok = req.device.geo.country.upper() in {"USA", "US"}
+        if req.device.devicetype is not None:
+            req_device = ORTB_DEVICE_MAP.get(req.device.devicetype)
+    req_hour = datetime.now(timezone.utc).hour
     consent_ok = req.user.consent if req.user else True
     ts = now_iso()
     bids: List[Dict[str, Any]] = []
+    filtered_reasons: List[str] = []
     with conn() as db:
         for imp in req.imp:
+            if targeting:
+                blocks = _targeting_block(targeting, device=req_device, geo=req_geo, hour=req_hour, supply=supply)
+                if blocks:
+                    filtered_reasons.extend(blocks)
+                    continue
             floor = imp.bidfloor or supply["bid_floor_cpm"]
             scored = _score_impression(
                 factors, line,
