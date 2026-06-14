@@ -6,10 +6,10 @@ import {
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
-  Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Compliance, Connector, ConnectorFacts,
+  Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
   Creative, Deal, Forecast, FrequencyGovernance, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
   Overview, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
-  User, Workbench,
+  Targeting, User, Workbench,
 } from './api/fullDspClient';
 import { toast, ToastContainer } from './toast';
 
@@ -371,6 +371,34 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
   ]);
   const [bulkForm, setBulkForm] = useState({ entity_type: 'line_item', ids: '', updates: '{"status":"active"}', reason: 'Launch approved line items', dry_run: true });
   const [bulkResult, setBulkResult] = useState<unknown>(null);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [deviceTypes, setDeviceTypes] = useState<string[]>([]);
+  const [safetyTiers, setSafetyTiers] = useState<string[]>([]);
+  const allLines = useMemo(() => (workbench?.campaigns || []).flatMap((c) => c.line_items.map((l) => ({ ...l, campaignName: c.name }))), [workbench]);
+  const [tgtLineId, setTgtLineId] = useState('');
+  const [targeting, setTargeting] = useState<Targeting | null>(null);
+
+  useEffect(() => { client.get<Channels>('/api/full/channels').then((d) => { setChannels(d.channels); setDeviceTypes(d.devices); setSafetyTiers(d.brand_safety_tiers); }).catch(() => {}); }, [client]);
+  useEffect(() => { if (!tgtLineId && allLines[0]) setTgtLineId(allLines[0].id); }, [allLines, tgtLineId]);
+  useEffect(() => { if (tgtLineId) client.get<Targeting>(`/api/full/line-items/${tgtLineId}/targeting`).then(setTargeting).catch(() => {}); }, [client, tgtLineId]);
+
+  function toggleDevice(d: string) {
+    if (!targeting) return;
+    setTargeting({ ...targeting, devices: targeting.devices.includes(d) ? targeting.devices.filter((x) => x !== d) : [...targeting.devices, d] });
+  }
+  function toggleDaypart(h: number) {
+    if (!targeting) return;
+    setTargeting({ ...targeting, dayparts: targeting.dayparts.includes(h) ? targeting.dayparts.filter((x) => x !== h) : [...targeting.dayparts, h].sort((a, b) => a - b) });
+  }
+  async function saveTargeting(event: FormEvent) {
+    event.preventDefault();
+    if (!tgtLineId || !targeting) return;
+    setBusy(true);
+    try {
+      await client.put(`/api/full/line-items/${tgtLineId}/targeting`, { devices: targeting.devices, geos: targeting.geos, dayparts: targeting.dayparts, brand_safety: targeting.brand_safety, viewability_target: targeting.viewability_target });
+      toast.success('Targeting saved');
+    } catch (e) { setError(friendlyError(e, 'Save targeting failed')); toast.error('Save targeting failed'); } finally { setBusy(false); }
+  }
 
   async function buildCampaign(event: FormEvent) {
     event.preventDefault();
@@ -410,7 +438,9 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
           {lineItems.map((line, index) => (
             <div className="line-editor" key={index}>
               <input value={line.name} onChange={(e) => setLineItems(lineItems.map((it, i) => i === index ? { ...it, name: e.target.value } : it))} />
-              <input value={line.channel} onChange={(e) => setLineItems(lineItems.map((it, i) => i === index ? { ...it, channel: e.target.value } : it))} />
+              <select value={line.channel} onChange={(e) => setLineItems(lineItems.map((it, i) => i === index ? { ...it, channel: e.target.value } : it))}>
+                {channels.length ? channels.map((ch) => <option key={ch.id} value={ch.id}>{ch.label}</option>) : <option value={line.channel}>{line.channel}</option>}
+              </select>
               <input type="number" value={line.budget} onChange={(e) => setLineItems(lineItems.map((it, i) => i === index ? { ...it, budget: Number(e.target.value) } : it))} />
               <input type="number" value={line.max_bid_cpm} onChange={(e) => setLineItems(lineItems.map((it, i) => i === index ? { ...it, max_bid_cpm: Number(e.target.value) } : it))} />
             </div>
@@ -430,6 +460,25 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
           {bulkResult ? <pre className="result-box">{JSON.stringify(bulkResult, null, 2)}</pre> : null}
         </form>
       </div>
+
+      <form className="dsp-panel" onSubmit={saveTargeting}>
+        <div className="panel-title"><div><p className="eyebrow">Targeting</p><h2>Devices, geo, dayparting &amp; brand safety</h2></div><Target /></div>
+        <label>Line item<select value={tgtLineId} onChange={(e) => setTgtLineId(e.target.value)}>{allLines.map((l) => <option key={l.id} value={l.id}>{l.campaignName} · {l.name} ({l.channel})</option>)}{!allLines.length && <option value="">Build a campaign first</option>}</select></label>
+        {targeting && (
+          <>
+            <h3>Devices</h3>
+            <div className="chip-row">{deviceTypes.map((d) => <button type="button" key={d} className={`chip ${targeting.devices.includes(d) ? 'on' : ''}`} onClick={() => toggleDevice(d)}>{d}</button>)}</div>
+            <h3>Dayparting <span className="muted-label">(active hours, local)</span></h3>
+            <div className="daypart-grid">{Array.from({ length: 24 }).map((_, h) => <button type="button" key={h} className={`daypart ${targeting.dayparts.includes(h) ? 'on' : ''}`} onClick={() => toggleDaypart(h)} title={`${h}:00`}>{h}</button>)}</div>
+            <div className="form-grid two-col">
+              <label>Geos (comma separated)<input value={targeting.geos.join(', ')} onChange={(e) => setTargeting({ ...targeting, geos: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })} placeholder="US-CA, US-NY" /></label>
+              <label>Brand safety<select value={targeting.brand_safety} onChange={(e) => setTargeting({ ...targeting, brand_safety: e.target.value })}>{safetyTiers.map((t) => <option key={t} value={t}>{t.replaceAll('_', ' ')}</option>)}</select></label>
+              <label>Min viewability<input type="number" step="0.05" min="0" max="1" value={targeting.viewability_target} onChange={(e) => setTargeting({ ...targeting, viewability_target: Number(e.target.value) })} /></label>
+            </div>
+            <button className="primary-button" disabled={busy || !tgtLineId}>Save targeting</button>
+          </>
+        )}
+      </form>
 
       <Panel eyebrow="Campaigns" title="Live campaign table" icon={<ClipboardList />}>
         <div className="campaign-table">
@@ -625,10 +674,17 @@ function CreativeTab({ client, workbench, role, setError }: { client: Client; wo
           {creatives.map((c) => (
             <div className="creative-row" key={c.id}>
               <div className="creative-main">
-                <strong>{c.name}</strong>
-                <small>{c.fmt} · {c.channel} · v{c.version} {c.isi_included ? '' : '· ⚠ no ISI'}</small>
-                <small>{c.claims}</small>
-                {c.review_notes ? <small>Reviewer note: {c.review_notes}</small> : null}
+                <div className={`ad-preview ${c.mlr_status === 'approved' ? 'ok' : ''}`} title={c.fmt}>
+                  <span className="ad-tag">{c.channel}</span>
+                  <strong>{c.name}</strong>
+                  <p>{c.claims || 'Creative copy'}</p>
+                  <span className={`ad-isi ${c.isi_included ? '' : 'missing'}`}>{c.isi_included ? 'ISI included' : '⚠ ISI missing'}</span>
+                </div>
+                <div className="creative-meta">
+                  <strong>{c.name}</strong>
+                  <small>{c.fmt} · {c.channel} · v{c.version}</small>
+                  {c.review_notes ? <small>Reviewer note: {c.review_notes}</small> : null}
+                </div>
               </div>
               <div className="creative-status">
                 <Badge tone={c.mlr_status === 'approved' ? 'ok' : c.mlr_status === 'rejected' ? 'danger' : 'warn'}>{c.mlr_status.replaceAll('_', ' ')}</Badge>

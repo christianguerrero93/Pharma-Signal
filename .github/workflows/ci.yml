@@ -110,7 +110,12 @@ jobs:
           rep = client.get('/api/full/reporting/performance?days=14', headers=headers)
           assert rep.status_code == 200 and rep.json()['source'] == 'live', rep.text
 
-          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights']:
+          tgt = client.put(f'/api/full/line-items/{line_id}/targeting', headers=headers, json={'devices': ['ctv'], 'geos': ['US-CA'], 'dayparts': [18, 19, 20], 'brand_safety': 'pharma_sensitive', 'viewability_target': 0.8})
+          assert tgt.status_code == 200 and tgt.json()['brand_safety'] == 'pharma_sensitive', tgt.text
+          got = client.get(f'/api/full/line-items/{line_id}/targeting', headers=headers)
+          assert got.status_code == 200 and got.json()['devices'] == ['ctv'], got.text
+
+          for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'
 
