@@ -167,6 +167,7 @@ export type Bidstream = {
   phi_blocked: number;
   frequency_capped: number;
   pace_throttled: number;
+  targeting_filtered: number;
   unique_reach: number;
   avg_frequency: number;
   by_partner: { partner: string; requests: number; wins: number; win_rate: number; est_spend: number }[];
@@ -280,6 +281,9 @@ export type Insights = { recommendations: Recommendation[]; counts: { high: numb
 export type Channel = { id: string; label: string; typical_cpm: [number, number]; devices: string[]; note: string };
 export type Channels = { channels: Channel[]; devices: string[]; brand_safety_tiers: string[] };
 export type Targeting = { line_item_id: string; devices: string[]; geos: string[]; dayparts: number[]; brand_safety: string; viewability_target: number; updated_at: string | null };
+
+export type PlannerRow = { channel: string; pct: number; spend: number; cpm: number; impressions: number; est_reach: number };
+export type Planner = { budget: number; frequency: number; channels: PlannerRow[]; totals: { spend: number; impressions: number; blended_cpm: number; est_unique_reach: number } };
 
 export function friendlyError(err: unknown, fallback: string): string {
   const message = err instanceof Error ? err.message : String(err || fallback);

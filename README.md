@@ -77,8 +77,12 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   hints for ad-tech/pharma jargon.
 - **Channels & targeting** — a channel taxonomy (Display, Video, CTV, Audio, Native,
   DOOH, EHR) with typical-CPM/device metadata, plus per-line-item targeting: devices,
-  geos, dayparting, brand-safety tier, and viewability floor. Creatives render a visual
+  geos, dayparting, brand-safety tier, and viewability floor. **Targeting actively
+  filters the bidder** — the OpenRTB endpoint and bidstream simulator drop impressions
+  that fail device/geo/daypart/brand-safety/viewability rules. Creatives render a visual
   preview in the MLR queue.
+- **Media planner** — allocate a budget across channels and forecast impressions,
+  blended CPM, and unique reach from the CPM taxonomy.
 
 ### Product experience
 

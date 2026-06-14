@@ -8,7 +8,7 @@ import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
   Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
   Creative, Deal, Forecast, FrequencyGovernance, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
-  Overview, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
+  Overview, Planner, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
   Targeting, User, Workbench,
 } from './api/fullDspClient';
 import { toast, ToastContainer } from './toast';
@@ -872,6 +872,7 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
               <div className="metric-card"><span>Avg frequency</span><strong>{sim.avg_frequency}x</strong></div>
               <div className="metric-card"><span>Frequency capped</span><strong>{num(sim.frequency_capped)}</strong></div>
               <div className="metric-card"><span>Pace throttled</span><strong>{num(sim.pace_throttled)}</strong></div>
+              <div className="metric-card"><span>Targeting filtered</span><strong>{num(sim.targeting_filtered)}</strong></div>
               <div className="metric-card"><span>PHI blocked</span><strong className="warn">{num(sim.phi_blocked)}</strong></div>
             </div>
             <div className="decision-bar">
@@ -1053,10 +1054,26 @@ function MeasurementTab({ client, workbench, setError }: { client: Client; workb
 // ---------------------------------------------------------------------------
 function OptimizationTab({ client, setError }: TabProps) {
   const [opt, setOpt] = useState<Optimizer | null>(null);
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [selected, setSelected] = useState<string[]>(['Display', 'Native', 'CTV', 'Video']);
+  const [budget, setBudget] = useState(1000000);
+  const [frequency, setFrequency] = useState(3);
+  const [plan, setPlan] = useState<Planner | null>(null);
+  const [busy, setBusy] = useState(false);
   const load = useCallback(() => client.get<Optimizer>('/api/full/optimizer/portfolio').then(setOpt).catch((e) => setError(friendlyError(e, 'Optimizer failed'))), [client, setError]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { client.get<Channels>('/api/full/channels').then((d) => setChannels(d.channels)).catch(() => {}); }, [client]);
+  function toggleChan(id: string) { setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id])); }
+  async function runPlan() {
+    setBusy(true);
+    try {
+      const pct = selected.length ? 1 / selected.length : 0;
+      setPlan(await client.post<Planner>('/api/full/planner', { budget, frequency, channels: selected.map((c) => ({ channel: c, pct })) }));
+    } catch (e) { setError(friendlyError(e, 'Planner failed')); } finally { setBusy(false); }
+  }
 
   return (
+    <>
     <Panel eyebrow="Portfolio optimizer" title="Budget reallocation recommendations" icon={<TrendingUp />}
       actions={<button className="secondary-button" onClick={load}><RefreshCw size={16} /> Re-run</button>}>
       <div className="metric-grid">
@@ -1081,6 +1098,31 @@ function OptimizationTab({ client, setError }: TabProps) {
         {!opt?.recommendations.length && <p>No line items to optimize yet — build a campaign first.</p>}
       </div>
     </Panel>
+
+    <Panel eyebrow="Media planner" title="Channel allocation & reach forecast" icon={<Target />}
+      actions={<div className="inline-form"><label>Budget<input type="number" value={budget} onChange={(e) => setBudget(Number(e.target.value))} /></label><label>Frequency<input type="number" value={frequency} onChange={(e) => setFrequency(Number(e.target.value))} /></label><button type="button" className="primary-button" disabled={busy || !selected.length} onClick={runPlan}><Zap size={16} /> Forecast</button></div>}>
+      <p>Allocate a budget across channels and forecast impressions and unique reach using each channel's typical CPM.</p>
+      <div className="chip-row">
+        {channels.map((ch) => <button type="button" key={ch.id} className={`chip ${selected.includes(ch.id) ? 'on' : ''}`} onClick={() => toggleChan(ch.id)}>{ch.label} <small>${ch.typical_cpm[0]}–{ch.typical_cpm[1]}</small></button>)}
+      </div>
+      {plan && (
+        <>
+          <div className="metric-grid">
+            <div className="metric-card"><span>Total impressions</span><strong>{num(plan.totals.impressions)}</strong></div>
+            <div className="metric-card"><span>Blended CPM</span><strong>{money2(plan.totals.blended_cpm)}</strong></div>
+            <div className="metric-card"><span>Est. unique reach</span><strong>{num(plan.totals.est_unique_reach)}</strong></div>
+            <div className="metric-card"><span>Spend</span><strong>{money(plan.totals.spend)}</strong></div>
+          </div>
+          <div className="data-table">
+            <div className="data-head plan2-cols"><span>Channel</span><span>Mix</span><span>Spend</span><span>CPM</span><span>Impressions</span><span>Reach</span></div>
+            {plan.channels.map((r) => (
+              <div className="data-row plan2-cols" key={r.channel}><strong>{r.channel}</strong><span>{pct1(r.pct)}</span><span>{money(r.spend)}</span><span>{money2(r.cpm)}</span><span>{num(r.impressions)}</span><span>{num(r.est_reach)}</span></div>
+            ))}
+          </div>
+        </>
+      )}
+    </Panel>
+    </>
   );
 }
 
