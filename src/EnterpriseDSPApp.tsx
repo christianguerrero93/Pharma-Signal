@@ -6,9 +6,9 @@ import {
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
-  AlertsData, Audience, AudienceOverlap, BidFactors, Bidstream, BrandSafety, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
+  Advertiser, AlertsData, Audience, AudienceOverlap, BidFactors, Bidstream, BrandSafety, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
   Creative, Deal, Forecast, FrequencyGovernance, FrequencyState, Insights, IvtReport, MeasurementPlan, MeasurementResultDetail, Optimizer,
-  Overview, Planner, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
+  Overview, PacingAuto, Planner, RankedSupply, Reporting, ReportView, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
   Targeting, User, VastTag, VastValidate, Workbench,
 } from './api/fullDspClient';
 import { toast, ToastContainer } from './toast';
@@ -438,6 +438,18 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
   const allLines = useMemo(() => (workbench?.campaigns || []).flatMap((c) => c.line_items.map((l) => ({ ...l, campaignName: c.name }))), [workbench]);
   const [tgtLineId, setTgtLineId] = useState('');
   const [targeting, setTargeting] = useState<Targeting | null>(null);
+  const [advertisers, setAdvertisers] = useState<Advertiser[]>([]);
+  const [advertiserId, setAdvertiserId] = useState('');
+  const [newAdv, setNewAdv] = useState({ name: '', kind: 'brand' });
+
+  const loadAdvertisers = useCallback(() => client.get<Advertiser[]>('/api/full/advertisers').then(setAdvertisers).catch(() => {}), [client]);
+  useEffect(() => { loadAdvertisers(); }, [loadAdvertisers]);
+  async function createAdvertiser(event: FormEvent) {
+    event.preventDefault();
+    if (!newAdv.name) return;
+    setBusy(true);
+    try { await client.post('/api/full/advertisers', newAdv); toast.success(`Advertiser "${newAdv.name}" created`); setNewAdv({ name: '', kind: 'brand' }); loadAdvertisers(); } catch (e) { setError(friendlyError(e, 'Create advertiser failed')); toast.error('Create advertiser failed'); } finally { setBusy(false); }
+  }
 
   useEffect(() => { client.get<Channels>('/api/full/channels').then((d) => { setChannels(d.channels); setDeviceTypes(d.devices); setSafetyTiers(d.brand_safety_tiers); }).catch(() => {}); }, [client]);
   useEffect(() => { if (!tgtLineId && allLines[0]) setTgtLineId(allLines[0].id); }, [allLines, tgtLineId]);
@@ -465,9 +477,10 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
     event.preventDefault();
     setBusy(true);
     try {
-      await client.post('/api/full/campaign-build', { campaign: campaignForm, line_items: lineItems, default_bid_factors: starterBidFactors });
+      await client.post('/api/full/campaign-build', { campaign: { ...campaignForm, advertiser_id: advertiserId || null }, line_items: lineItems, default_bid_factors: starterBidFactors });
       toast.success(`Campaign "${campaignForm.name}" created`);
       reload();
+      loadAdvertisers();
     } catch (err) { setError(friendlyError(err, 'Campaign build failed')); toast.error('Campaign build failed'); } finally { setBusy(false); }
   }
 
@@ -490,6 +503,7 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
       <div className="dsp-grid two">
         <form className="dsp-panel" onSubmit={buildCampaign}>
           <div className="panel-title"><div><p className="eyebrow">Campaign builder</p><h2>Build campaign + line items</h2></div><PencilRuler /></div>
+          <label>Advertiser<select value={advertiserId} onChange={(e) => setAdvertiserId(e.target.value)}><option value="">Unassigned</option>{advertisers.filter((a) => a.id).map((a) => <option key={a.id} value={a.id!}>{a.name} ({a.kind})</option>)}</select></label>
           <div className="form-grid two-col">
             {Object.entries(campaignForm).map(([key, value]) => (
               <label key={key}>{key.replaceAll('_', ' ')}<input value={value} type={typeof value === 'number' ? 'number' : 'text'} onChange={(e) => setCampaignForm({ ...campaignForm, [key]: typeof value === 'number' ? Number(e.target.value) : e.target.value })} /></label>
@@ -521,6 +535,21 @@ function CampaignsTab({ client, workbench, reload, setError }: { client: Client;
           {bulkResult ? <pre className="result-box">{JSON.stringify(bulkResult, null, 2)}</pre> : null}
         </form>
       </div>
+
+      <Panel eyebrow="Advertisers" title="Accounts & budget rollup" icon={<Users />}
+        actions={<form className="inline-form" onSubmit={createAdvertiser}><label>Name<input value={newAdv.name} onChange={(e) => setNewAdv({ ...newAdv, name: e.target.value })} placeholder="New advertiser" /></label><label>Kind<select value={newAdv.kind} onChange={(e) => setNewAdv({ ...newAdv, kind: e.target.value })}><option value="brand">brand</option><option value="agency">agency</option></select></label><button className="primary-button" disabled={busy || !newAdv.name}>Add</button></form>}>
+        <div className="data-table">
+          <div className="data-head adv-cols"><span>Advertiser</span><span>Kind</span><span>Campaigns</span><span>Total budget</span></div>
+          {advertisers.map((a) => (
+            <div className="data-row adv-cols" key={a.id ?? 'unassigned'}>
+              <strong>{a.name}</strong>
+              <span>{a.kind}</span>
+              <span>{num(a.campaigns)}</span>
+              <span>{money(a.total_budget)}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
 
       <form className="dsp-panel" onSubmit={saveTargeting}>
         <div className="panel-title"><div><p className="eyebrow">Targeting</p><h2>Devices, geo, dayparting &amp; brand safety</h2></div><Target /></div>
@@ -1198,6 +1227,18 @@ function OptimizationTab({ client, setError }: TabProps) {
   const [frequency, setFrequency] = useState(3);
   const [plan, setPlan] = useState<Planner | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pacing, setPacing] = useState<PacingAuto | null>(null);
+
+  async function runPacing(apply: boolean) {
+    setBusy(true);
+    try {
+      const result = await client.post<PacingAuto>(`/api/full/pacing/auto?apply=${apply}`, {});
+      setPacing(result);
+      if (apply) toast.success(`Applied ${result.adjusted} bid adjustment${result.adjusted === 1 ? '' : 's'}`);
+      else toast.info(`${result.adjustments.filter((a) => a.action !== 'hold').length} adjustment(s) recommended — review below`);
+      if (apply) load();
+    } catch (e) { setError(friendlyError(e, 'Auto-pacing failed')); toast.error('Auto-pacing failed'); } finally { setBusy(false); }
+  }
   const load = useCallback(() => client.get<Optimizer>('/api/full/optimizer/portfolio').then(setOpt).catch((e) => setError(friendlyError(e, 'Optimizer failed'))), [client, setError]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => { client.get<Channels>('/api/full/channels').then((d) => setChannels(d.channels)).catch(() => {}); }, [client]);
@@ -1260,6 +1301,27 @@ function OptimizationTab({ client, setError }: TabProps) {
         </>
       )}
     </Panel>
+
+    <Panel eyebrow="Pacing automation" title="Auto-adjust bids to hit the flight" icon={<Gauge />}
+      actions={<div className="button-row"><button type="button" className="secondary-button" disabled={busy} onClick={() => runPacing(false)}>Preview</button><button type="button" className="primary-button" disabled={busy || !pacing || pacing.apply} onClick={() => runPacing(true)}><Zap size={16} /> Apply adjustments</button></div>}>
+      <p>Compares each active campaign's delivery to budget and raises bids when underpacing / lowers them when overpacing (bounded ±30%). Preview first, then apply — every change is audited.</p>
+      {pacing ? (
+        <div className="data-table">
+          <div className="data-head pace-cols"><span>Line item</span><span>Campaign</span><span>Pacing</span><span>Bid</span><span>Action</span><span>Status</span></div>
+          {pacing.adjustments.map((a) => (
+            <div className="data-row pace-cols" key={a.line_item_id}>
+              <strong>{a.name}</strong>
+              <span>{a.campaign}</span>
+              <span>{pct(a.pacing)}</span>
+              <span>{money2(a.old_bid_cpm)}{a.action !== 'hold' ? ` → ${money2(a.new_bid_cpm)}` : ''}</span>
+              <span><Badge tone={a.action === 'raise_bid' ? 'ok' : a.action === 'lower_bid' ? 'warn' : 'muted'}>{a.action.replaceAll('_', ' ')}</Badge></span>
+              <span>{a.applied ? <Badge tone="ok">applied</Badge> : <span className="muted-label">{a.action === 'hold' ? '—' : 'pending'}</span>}</span>
+            </div>
+          ))}
+          {!pacing.adjustments.length && <p>No active line items to pace.</p>}
+        </div>
+      ) : <p className="muted-label">Click Preview to compute recommendations.</p>}
+    </Panel>
     </>
   );
 }
@@ -1272,6 +1334,18 @@ function ReportingTab({ client, setError }: TabProps) {
   const [days, setDays] = useState(14);
   const load = useCallback((d: number) => client.get<Reporting>(`/api/full/reporting/performance?days=${d}`).then(setReport).catch((e) => setError(friendlyError(e, 'Reporting failed'))), [client, setError]);
   useEffect(() => { load(days); }, [load, days]);
+
+  const [views, setViews] = useState<ReportView[]>([]);
+  const [viewName, setViewName] = useState('');
+  const loadViews = useCallback(() => client.get<ReportView[]>('/api/full/report-views').then(setViews).catch(() => {}), [client]);
+  useEffect(() => { loadViews(); }, [loadViews]);
+  async function saveView() {
+    if (!viewName) return;
+    try { await client.post('/api/full/report-views', { name: viewName, config: { days } }); toast.success(`Saved view "${viewName}"`); setViewName(''); loadViews(); } catch (e) { setError(friendlyError(e, 'Save view failed')); }
+  }
+  async function deleteView(id: string) {
+    try { await client.request(`/api/full/report-views/${id}`, { method: 'DELETE' }); loadViews(); } catch (e) { setError(friendlyError(e, 'Delete view failed')); }
+  }
 
   const p = report?.portfolio;
   const series = useMemo(() => {
@@ -1294,6 +1368,17 @@ function ReportingTab({ client, setError }: TabProps) {
           <div className="metric-card"><span>Conversions</span><strong>{num(p?.conversions || 0)}</strong></div>
           <div className="metric-card"><span>CTR</span><strong>{pct1(p?.ctr || 0)}</strong></div>
           <div className="metric-card"><span>CPA</span><strong>{money2(p?.cpa || 0)}</strong></div>
+        </div>
+        <div className="inline-form view-bar">
+          <span className="muted-label">Saved views:</span>
+          {views.map((v) => (
+            <span key={v.id} className={`chip ${v.config.days === days ? 'on' : ''}`}>
+              <button type="button" className="chip-action" onClick={() => setDays(v.config.days || 14)}>{v.name}</button>
+              <button type="button" className="chip-x" title="Delete view" onClick={() => deleteView(v.id)}>×</button>
+            </span>
+          ))}
+          <input value={viewName} onChange={(e) => setViewName(e.target.value)} placeholder="View name" />
+          <button type="button" className="secondary-button" disabled={!viewName} onClick={saveView}>Save current view</button>
         </div>
         {series.length > 1 && (
           <div className="trend-grid">

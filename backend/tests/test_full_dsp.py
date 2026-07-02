@@ -249,3 +249,56 @@ class TestUsers:
 
     def test_cannot_delete_self(self, admin):
         assert client.request("DELETE", f"/api/full/users/{admin['user']['id']}", headers=auth(admin["access_token"])).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Advertisers, pacing automation, report views
+# ---------------------------------------------------------------------------
+class TestEnterprise:
+    def test_advertisers_and_campaign_scoping(self, admin, trader):
+        h = auth(admin["access_token"])
+        advs = client.get("/api/full/advertisers", headers=h).json()
+        assert any(a["name"] == "Sanofi" for a in advs)
+        adv_id = [a for a in advs if a["name"] == "Sanofi"][0]["id"]
+        resp = client.post("/api/full/campaign-build", headers=auth(trader["access_token"]), json={
+            "campaign": {"name": "Scoped", "brand": "B", "indication": "i", "audience_type": "HCP", "objective": "o",
+                         "budget": 100000, "flight_start": "2026-07-01", "flight_end": "2026-12-31", "status": "active",
+                         "advertiser_id": adv_id},
+            "line_items": [{"name": "L", "channel": "Display", "budget": 100000, "max_bid_cpm": 20,
+                            "pacing_mode": "even", "status": "active", "frequency_cap": 3}]})
+        assert resp.status_code == 200, resp.text
+        advs2 = client.get("/api/full/advertisers", headers=h).json()
+        sanofi = [a for a in advs2 if a["name"] == "Sanofi"][0]
+        assert sanofi["campaigns"] >= 1 and sanofi["total_budget"] >= 100000
+        created = client.post("/api/full/advertisers", headers=h, json={"name": "Test Agency", "kind": "agency"})
+        assert created.status_code == 200
+
+    def test_pacing_auto_dry_run_and_apply(self, admin, campaign):
+        h = auth(admin["access_token"])
+        dry = client.post("/api/full/pacing/auto?apply=false", headers=h).json()
+        assert dry["apply"] is False and dry["adjusted"] == 0 and len(dry["adjustments"]) >= 1
+        for adj in dry["adjustments"]:
+            assert adj["action"] in {"raise_bid", "lower_bid", "hold"}
+            assert 0.7 * adj["old_bid_cpm"] - 0.01 <= adj["new_bid_cpm"] <= 1.3 * adj["old_bid_cpm"] + 0.01
+        applied = client.post("/api/full/pacing/auto?apply=true", headers=h).json()
+        assert applied["apply"] is True
+        changed = [a for a in applied["adjustments"] if a["applied"]]
+        if changed:
+            wb = client.get("/api/full/workbench", headers=h).json()
+            bids = {l["id"]: l["max_bid_cpm"] for c in wb["campaigns"] for l in c["line_items"]}
+            for adj in changed:
+                assert abs(bids[adj["line_item_id"]] - adj["new_bid_cpm"]) < 0.01
+
+    def test_pacing_auto_requires_trader_or_admin(self, analyst):
+        assert client.post("/api/full/pacing/auto", headers=auth(analyst["access_token"])).status_code == 403
+
+    def test_report_views_crud_and_isolation(self, admin, trader):
+        h = auth(admin["access_token"])
+        view = client.post("/api/full/report-views", headers=h, json={"name": "Last 30d", "config": {"days": 30}})
+        assert view.status_code == 200
+        mine = client.get("/api/full/report-views", headers=h).json()
+        assert any(v["name"] == "Last 30d" and v["config"]["days"] == 30 for v in mine)
+        # another user does not see it
+        others = client.get("/api/full/report-views", headers=auth(trader["access_token"])).json()
+        assert not any(v["name"] == "Last 30d" for v in others)
+        assert client.request("DELETE", f"/api/full/report-views/{view.json()['id']}", headers=h).json()["deleted"] is True

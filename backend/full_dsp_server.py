@@ -294,6 +294,7 @@ class CampaignCreate(BaseModel):
     flight_start: str
     flight_end: str
     status: str = "draft"
+    advertiser_id: Optional[str] = None
 
 
 class LineItemCreate(BaseModel):
@@ -513,6 +514,17 @@ class RoleUpdate(BaseModel):
     role: str = Field(pattern="^(admin|trader|analyst)$")
 
 
+class AdvertiserCreate(BaseModel):
+    name: str
+    kind: str = Field(default="brand", pattern="^(brand|agency)$")
+    status: str = "active"
+
+
+class ReportViewCreate(BaseModel):
+    name: str
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
 class VastTagCreate(BaseModel):
     name: str
     vast_url: str
@@ -583,6 +595,8 @@ CREATE TABLE IF NOT EXISTS frequency_ledger (line_item_id TEXT, user_key INTEGER
 CREATE TABLE IF NOT EXISTS vast_tags (id TEXT PRIMARY KEY, name TEXT, vast_url TEXT, channel TEXT, duration INTEGER, skippable INTEGER, status TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS settings (skey TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS supply_blocklist (id TEXT PRIMARY KEY, value TEXT, kind TEXT, reason TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS advertisers (id TEXT PRIMARY KEY, name TEXT, kind TEXT, status TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS report_views (id TEXT PRIMARY KEY, user_id TEXT, name TEXT, config_json TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
 """
 
@@ -590,6 +604,16 @@ CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEX
 def init_db() -> None:
     with conn() as db:
         db.executescript(SCHEMA)
+        # Additive migration: attach campaigns to advertisers (safe on both engines;
+        # errors mean the column already exists).
+        try:
+            db.execute("ALTER TABLE campaigns ADD COLUMN advertiser_id TEXT")
+            db.commit()
+        except Exception:
+            db.raw.rollback()
+        if not db.execute("SELECT 1 FROM advertisers LIMIT 1").fetchone():
+            for name, kind in [("Sanofi", "brand"), ("Horizon Media", "agency")]:
+                db.execute("INSERT INTO advertisers VALUES (?, ?, ?, ?, ?)", (str(uuid4()), name, kind, "active", now_iso()))
         if not db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
             seed_password = os.environ.get("FULL_DSP_DEV_PASSWORD", "pharma-signal-local")
             pw_hash = hash_password(seed_password)
@@ -773,7 +797,10 @@ def build_campaign(payload: CampaignBuildRequest, user: Dict[str, Any] = Depends
     campaign_id = str(uuid4())
     ts = now_iso()
     with conn() as db:
-        db.execute("INSERT INTO campaigns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (campaign_id, payload.campaign.name, payload.campaign.brand, payload.campaign.indication, payload.campaign.audience_type, payload.campaign.objective, payload.campaign.budget, payload.campaign.flight_start, payload.campaign.flight_end, payload.campaign.status, user["email"], ts, ts))
+        db.execute(
+            "INSERT INTO campaigns (id, name, brand, indication, audience_type, objective, budget, flight_start, flight_end, status, created_by, created_at, updated_at, advertiser_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (campaign_id, payload.campaign.name, payload.campaign.brand, payload.campaign.indication, payload.campaign.audience_type, payload.campaign.objective, payload.campaign.budget, payload.campaign.flight_start, payload.campaign.flight_end, payload.campaign.status, user["email"], ts, ts, payload.campaign.advertiser_id),
+        )
         created_lines = []
         for item in payload.line_items:
             line_id = str(uuid4())
@@ -848,6 +875,101 @@ def media_planner(payload: PlannerRequest, user: Dict[str, Any] = Depends(curren
             "est_unique_reach": int(tot_imps / max(payload.frequency, 1)),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Advertiser accounts (multi-tenant grouping above campaigns)
+# ---------------------------------------------------------------------------
+@app.get("/api/full/advertisers")
+def list_advertisers(user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
+    with conn() as db:
+        rows = dicts(db.execute("SELECT * FROM advertisers ORDER BY name").fetchall())
+        rollup = dicts(db.execute("SELECT advertiser_id, COUNT(*) AS n, COALESCE(SUM(budget),0) AS budget FROM campaigns GROUP BY advertiser_id").fetchall())
+        unassigned = dict(db.execute("SELECT COUNT(*) AS n, COALESCE(SUM(budget),0) AS budget FROM campaigns WHERE advertiser_id IS NULL").fetchone())
+    by_adv = {r["advertiser_id"]: r for r in rollup if r["advertiser_id"]}
+    for row in rows:
+        agg = by_adv.get(row["id"], {})
+        row["campaigns"] = int(agg.get("n", 0))
+        row["total_budget"] = round(float(agg.get("budget", 0)), 2)
+    return rows + [{"id": None, "name": "Unassigned", "kind": "—", "status": "—", "campaigns": int(unassigned["n"]), "total_budget": round(float(unassigned["budget"]), 2)}]
+
+
+@app.post("/api/full/advertisers")
+def create_advertiser(payload: AdvertiserCreate, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    adv_id = str(uuid4())
+    with conn() as db:
+        db.execute("INSERT INTO advertisers VALUES (?, ?, ?, ?, ?)", (adv_id, payload.name, payload.kind, payload.status, now_iso()))
+        db.commit()
+    audit(user["email"], "advertiser_create", "advertiser", adv_id, payload.model_dump())
+    return {"id": adv_id, **payload.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Pacing automation: recommend (and optionally apply) bid adjustments
+# ---------------------------------------------------------------------------
+@app.post("/api/full/pacing/auto")
+def pacing_auto(apply: bool = Query(False), user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    """Compare each active campaign's delivery to budget and auto-adjust line bids."""
+    perf = reporting_performance(days=14, user=user)
+    pacing_by_campaign = {c["campaign_id"]: c for c in perf["campaigns"]}
+    with conn() as db:
+        lines = dicts(db.execute("SELECT * FROM line_items WHERE status='active'").fetchall())
+    adjustments: List[Dict[str, Any]] = []
+    ts = now_iso()
+    with conn() as db:
+        for line in lines:
+            camp = pacing_by_campaign.get(line["campaign_id"])
+            if not camp:
+                continue
+            pacing = camp["pacing"]
+            old_bid = line["max_bid_cpm"]
+            if pacing < 0.9:
+                action, factor, reason = "raise_bid", 1.10, f"underpacing at {round(pacing * 100)}% — raise bid to win more auctions"
+            elif pacing > 1.1:
+                action, factor, reason = "lower_bid", 0.90, f"overpacing at {round(pacing * 100)}% — lower bid to protect the flight"
+            else:
+                action, factor, reason = "hold", 1.0, f"on pace at {round(pacing * 100)}%"
+            new_bid = round(min(old_bid * 1.3, max(old_bid * 0.7, old_bid * factor)), 2)
+            applied = False
+            if apply and action != "hold":
+                db.execute("UPDATE line_items SET max_bid_cpm=?, updated_at=? WHERE id=?", (new_bid, ts, line["id"]))
+                applied = True
+            adjustments.append({"line_item_id": line["id"], "name": line["name"], "campaign": camp["name"], "pacing": pacing, "action": action, "old_bid_cpm": old_bid, "new_bid_cpm": new_bid if action != "hold" else old_bid, "reason": reason, "applied": applied})
+        if apply:
+            db.commit()
+    if apply:
+        audit(user["email"], "pacing_auto_apply", "line_item", ",".join(a["line_item_id"] for a in adjustments if a["applied"]) or "none", {"adjusted": sum(1 for a in adjustments if a["applied"])})
+    return {"apply": apply, "adjustments": adjustments, "adjusted": sum(1 for a in adjustments if a["applied"]), "generated_at": ts}
+
+
+# ---------------------------------------------------------------------------
+# Saved report views
+# ---------------------------------------------------------------------------
+@app.get("/api/full/report-views")
+def list_report_views(user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
+    with conn() as db:
+        rows = dicts(db.execute("SELECT * FROM report_views WHERE user_id=? ORDER BY created_at DESC", (user["id"],)).fetchall())
+    for row in rows:
+        row["config"] = json.loads(row.pop("config_json") or "{}")
+    return rows
+
+
+@app.post("/api/full/report-views")
+def create_report_view(payload: ReportViewCreate, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    view_id = str(uuid4())
+    with conn() as db:
+        db.execute("INSERT INTO report_views VALUES (?, ?, ?, ?, ?)", (view_id, user["id"], payload.name, json.dumps(payload.config), now_iso()))
+        db.commit()
+    audit(user["email"], "report_view_create", "report_view", view_id, {"name": payload.name})
+    return {"id": view_id, "name": payload.name, "config": payload.config}
+
+
+@app.delete("/api/full/report-views/{view_id}")
+def delete_report_view(view_id: str, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    with conn() as db:
+        db.execute("DELETE FROM report_views WHERE id=? AND user_id=?", (view_id, user["id"]))
+        db.commit()
+    return {"id": view_id, "deleted": True}
 
 
 # ---------------------------------------------------------------------------
