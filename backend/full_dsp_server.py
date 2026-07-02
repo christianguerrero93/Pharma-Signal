@@ -34,14 +34,16 @@ import json
 import math
 import os
 import random
+import logging
 import time
 import xml.etree.ElementTree as ET
+from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import bcrypt
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -63,6 +65,41 @@ app.add_middleware(
 
 JWT_SECRET = os.environ.get("FULL_DSP_JWT_SECRET", "pharma-signal-dev-secret-change-me")
 JWT_TTL_SECONDS = int(os.environ.get("FULL_DSP_JWT_TTL", "43200"))  # 12 hours
+REFRESH_TTL_SECONDS = int(os.environ.get("FULL_DSP_REFRESH_TTL", str(14 * 24 * 3600)))  # 14 days
+LOGIN_RATE_LIMIT = int(os.environ.get("FULL_DSP_LOGIN_RATE_LIMIT", "10"))  # failed attempts
+LOGIN_RATE_WINDOW = int(os.environ.get("FULL_DSP_LOGIN_RATE_WINDOW", "300"))  # seconds
+
+# Structured request logging (method, path, status, duration).
+logger = logging.getLogger("pharma_signal")
+if not logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(_handler)
+    logger.setLevel(os.environ.get("FULL_DSP_LOG_LEVEL", "INFO"))
+
+# Sliding-window failed-login tracker keyed by client IP + email.
+_login_failures: Dict[str, deque] = defaultdict(deque)
+
+
+def _login_rate_limited(key: str) -> bool:
+    window = _login_failures[key]
+    now = time.time()
+    while window and now - window[0] > LOGIN_RATE_WINDOW:
+        window.popleft()
+    return len(window) >= LOGIN_RATE_LIMIT
+
+
+def _record_login_failure(key: str) -> None:
+    _login_failures[key].append(time.time())
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = round((time.time() - start) * 1000, 1)
+    logger.info("%s %s -> %s in %sms", request.method, request.url.path, response.status_code, duration_ms)
+    return response
 # Absolute base used to build OpenRTB win-notice (nurl) and billing (burl) URLs.
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
 
@@ -126,13 +163,21 @@ def _b64u_decode(segment: str) -> bytes:
     return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
 
 
-def create_access_token(user: Dict[str, Any]) -> str:
+def _create_token(user: Dict[str, Any], token_type: str, ttl: int) -> str:
     now = int(time.time())
     header = {"alg": "HS256", "typ": "JWT"}
-    payload = {"sub": user["id"], "email": user["email"], "role": user["role"], "iat": now, "exp": now + JWT_TTL_SECONDS}
+    payload = {"sub": user["id"], "email": user["email"], "role": user["role"], "typ": token_type, "iat": now, "exp": now + ttl}
     signing_input = _b64u(json.dumps(header, separators=(",", ":")).encode()) + "." + _b64u(json.dumps(payload, separators=(",", ":")).encode())
     signature = _b64u(hmac.new(JWT_SECRET.encode("utf-8"), signing_input.encode("ascii"), hashlib.sha256).digest())
     return f"{signing_input}.{signature}"
+
+
+def create_access_token(user: Dict[str, Any]) -> str:
+    return _create_token(user, "access", JWT_TTL_SECONDS)
+
+
+def create_refresh_token(user: Dict[str, Any]) -> str:
+    return _create_token(user, "refresh", REFRESH_TTL_SECONDS)
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:
@@ -156,6 +201,9 @@ def current_user(authorization: str = Header(default="")) -> Dict[str, Any]:
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing bearer token")
     claims = decode_access_token(authorization[7:])
+    # Refresh tokens cannot be used as access tokens (legacy tokens lack "typ").
+    if claims.get("typ", "access") != "access":
+        raise HTTPException(401, "Refresh token cannot be used for API access")
     with conn() as db:
         row = db.execute("SELECT id, email, name, role, created_at FROM users WHERE id=?", (claims["sub"],)).fetchone()
     if not row:
@@ -612,20 +660,42 @@ def health() -> Dict[str, str]:
 
 
 @app.post("/api/full/auth/login")
-def login(payload: LoginRequest) -> Dict[str, Any]:
+def login(payload: LoginRequest, request: Request) -> Dict[str, Any]:
     init_db()
+    client_ip = request.client.host if request.client else "unknown"
+    rate_key = f"{client_ip}:{payload.email.lower()}"
+    if _login_rate_limited(rate_key):
+        raise HTTPException(429, f"Too many failed login attempts. Try again in {LOGIN_RATE_WINDOW // 60} minutes.")
     with conn() as db:
         row = db.execute("SELECT * FROM users WHERE lower(email)=lower(?)", (payload.email,)).fetchone()
         if not row or not verify_password(payload.password, row["password_hash"]):
+            _record_login_failure(rate_key)
             raise HTTPException(401, "Invalid email or password")
         row = dict(row)
         if not row["password_hash"].startswith("$2"):
             db.execute("UPDATE users SET password_hash=? WHERE id=?", (hash_password(payload.password), row["id"]))
             db.commit()
+    _login_failures.pop(rate_key, None)
     user = {k: row[k] for k in row if k != "password_hash"}
-    token = create_access_token(user)
     audit(user["email"], "login", "user", user["id"], {"role": user["role"]})
-    return {"access_token": token, "token_type": "bearer", "user": user}
+    return {"access_token": create_access_token(user), "refresh_token": create_refresh_token(user), "token_type": "bearer", "user": user}
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@app.post("/api/full/auth/refresh")
+def refresh(payload: RefreshRequest) -> Dict[str, Any]:
+    claims = decode_access_token(payload.refresh_token)
+    if claims.get("typ") != "refresh":
+        raise HTTPException(401, "Not a refresh token")
+    with conn() as db:
+        row = db.execute("SELECT id, email, name, role FROM users WHERE id=?", (claims["sub"],)).fetchone()
+    if not row:
+        raise HTTPException(401, "User no longer exists")
+    user = dict(row)
+    return {"access_token": create_access_token(user), "refresh_token": create_refresh_token(user), "token_type": "bearer"}
 
 
 @app.get("/api/full/auth/me")
