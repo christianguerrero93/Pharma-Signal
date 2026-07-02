@@ -494,3 +494,7 @@ button.mini.danger { border-color: rgba(251, 113, 133, 0.4); color: #fda4af; }
 /* Team / user management */
 .team-cols { grid-template-columns: 2.4fr 1fr 1fr 0.9fr; }
 @media (max-width: 760px) { .team-cols { grid-template-columns: 1fr; } }
+
+/* IVT report table */
+.ivt-cols { grid-template-columns: 2fr 1fr 0.8fr 0.8fr 0.8fr; }
+@media (max-width: 760px) { .ivt-cols { grid-template-columns: 1fr; } }

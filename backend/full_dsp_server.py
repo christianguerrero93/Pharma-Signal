@@ -35,6 +35,7 @@ import math
 import os
 import random
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -77,6 +78,11 @@ CHANNELS = [
 ]
 DEVICE_TYPES = ["desktop", "mobile", "tablet", "ctv", "dooh"]
 BRAND_SAFETY_TIERS = ["standard", "strict", "pharma_sensitive"]
+BRAND_SAFETY_CATEGORIES = [
+    "adult", "alcohol", "tobacco", "gambling", "politics", "controversial_news",
+    "violence", "hate_speech", "illegal_drugs", "weapons", "misinformation", "tragedy",
+]
+DEFAULT_BRAND_SAFETY = {"blocked_categories": ["adult", "hate_speech", "illegal_drugs", "violence", "misinformation"], "sensitivity": "standard"}
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +465,54 @@ class RoleUpdate(BaseModel):
     role: str = Field(pattern="^(admin|trader|analyst)$")
 
 
+class VastTagCreate(BaseModel):
+    name: str
+    vast_url: str
+    channel: str = "CTV"
+    duration: int = Field(default=15, ge=1, le=300)
+    skippable: bool = False
+
+
+class VastValidateRequest(BaseModel):
+    vast_url: Optional[str] = None
+    vast_xml: Optional[str] = None
+
+
+class BrandSafetyUpdate(BaseModel):
+    blocked_categories: List[str] = Field(default_factory=list)
+    sensitivity: str = Field(default="standard", pattern="^(standard|strict|pharma_sensitive)$")
+
+
+class BlocklistAdd(BaseModel):
+    value: str
+    kind: str = Field(default="domain", pattern="^(domain|partner|category)$")
+    reason: str = ""
+
+
+def _validate_vast(vast_url: Optional[str], vast_xml: Optional[str]) -> Dict[str, Any]:
+    reasons: List[str] = []
+    media_files: List[str] = []
+    version = None
+    if vast_xml:
+        try:
+            root = ET.fromstring(vast_xml)
+            if root.tag.split("}")[-1] != "VAST":
+                reasons.append("Root element is not <VAST>")
+            version = root.attrib.get("version")
+            media = [e for e in root.iter() if e.tag.split("}")[-1] == "MediaFile"]
+            if not media:
+                reasons.append("No <MediaFile> elements found")
+            media_files = [(m.text or "").strip()[:100] for m in media[:5] if (m.text or "").strip()]
+        except ET.ParseError as exc:
+            reasons.append(f"XML parse error: {exc}")
+    elif vast_url:
+        if not vast_url.lower().startswith(("http://", "https://")):
+            reasons.append("VAST tag URL must start with http:// or https://")
+    else:
+        reasons.append("Provide a vast_url or vast_xml")
+    return {"valid": not reasons, "reasons": reasons or ["VAST tag looks valid"], "version": version, "media_files": media_files}
+
+
 # ---------------------------------------------------------------------------
 # Database bootstrap + seed
 # ---------------------------------------------------------------------------
@@ -478,6 +532,9 @@ CREATE TABLE IF NOT EXISTS connectors (id TEXT PRIMARY KEY, name TEXT, kind TEXT
 CREATE TABLE IF NOT EXISTS delivery_facts (id TEXT PRIMARY KEY, connector_id TEXT, source TEXT, fact_date TEXT, campaign_id TEXT, partner TEXT, channel TEXT, impressions INTEGER, clicks INTEGER, conversions INTEGER, spend REAL, created_at TEXT);
 CREATE TABLE IF NOT EXISTS rtb_wins (id TEXT PRIMARY KEY, line_item_id TEXT, request_id TEXT, imp_id TEXT, partner TEXT, bid_price_cpm REAL, clear_price_cpm REAL, status TEXT, ts TEXT);
 CREATE TABLE IF NOT EXISTS frequency_ledger (line_item_id TEXT, user_key INTEGER, impressions INTEGER, last_ts TEXT, PRIMARY KEY (line_item_id, user_key));
+CREATE TABLE IF NOT EXISTS vast_tags (id TEXT PRIMARY KEY, name TEXT, vast_url TEXT, channel TEXT, duration INTEGER, skippable INTEGER, status TEXT, created_at TEXT);
+CREATE TABLE IF NOT EXISTS settings (skey TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT);
+CREATE TABLE IF NOT EXISTS supply_blocklist (id TEXT PRIMARY KEY, value TEXT, kind TEXT, reason TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS audit_events (id TEXT PRIMARY KEY, ts TEXT, actor TEXT, action TEXT, entity_type TEXT, entity_id TEXT, metadata_json TEXT);
 """
 
@@ -723,6 +780,106 @@ def media_planner(payload: PlannerRequest, user: Dict[str, Any] = Depends(curren
     }
 
 
+# ---------------------------------------------------------------------------
+# Brand safety, VAST tags, and invalid-traffic (IVT) controls
+# ---------------------------------------------------------------------------
+def _brand_safety_config(db) -> Dict[str, Any]:
+    row = db.execute("SELECT value_json FROM settings WHERE skey=?", ("brand_safety",)).fetchone()
+    if row:
+        try:
+            return json.loads(dict(row)["value_json"])
+        except (ValueError, KeyError):
+            pass
+    return dict(DEFAULT_BRAND_SAFETY)
+
+
+@app.get("/api/full/brand-safety")
+def get_brand_safety(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    with conn() as db:
+        cfg = _brand_safety_config(db)
+        blocklist = dicts(db.execute("SELECT * FROM supply_blocklist ORDER BY created_at DESC").fetchall())
+    return {"config": cfg, "categories": BRAND_SAFETY_CATEGORIES, "sensitivity_tiers": BRAND_SAFETY_TIERS, "blocklist": blocklist}
+
+
+@app.put("/api/full/brand-safety")
+def set_brand_safety(payload: BrandSafetyUpdate, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    bad = set(payload.blocked_categories) - set(BRAND_SAFETY_CATEGORIES)
+    if bad:
+        raise HTTPException(400, f"Unknown categories: {sorted(bad)}")
+    cfg = {"blocked_categories": payload.blocked_categories, "sensitivity": payload.sensitivity}
+    ts = now_iso()
+    with conn() as db:
+        if db.execute("SELECT 1 FROM settings WHERE skey=?", ("brand_safety",)).fetchone():
+            db.execute("UPDATE settings SET value_json=?, updated_at=? WHERE skey=?", (json.dumps(cfg), ts, "brand_safety"))
+        else:
+            db.execute("INSERT INTO settings VALUES (?, ?, ?)", ("brand_safety", json.dumps(cfg), ts))
+        db.commit()
+    audit(user["email"], "brand_safety_update", "settings", "brand_safety", cfg)
+    return {"config": cfg}
+
+
+@app.post("/api/full/supply-blocklist")
+def add_blocklist(payload: BlocklistAdd, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    item_id = str(uuid4())
+    with conn() as db:
+        db.execute("INSERT INTO supply_blocklist VALUES (?, ?, ?, ?, ?)", (item_id, payload.value, payload.kind, payload.reason, now_iso()))
+        db.commit()
+    audit(user["email"], "blocklist_add", "supply_blocklist", item_id, payload.model_dump())
+    return {"id": item_id, **payload.model_dump()}
+
+
+@app.delete("/api/full/supply-blocklist/{item_id}")
+def remove_blocklist(item_id: str, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    with conn() as db:
+        db.execute("DELETE FROM supply_blocklist WHERE id=?", (item_id,))
+        db.commit()
+    audit(user["email"], "blocklist_remove", "supply_blocklist", item_id, {})
+    return {"id": item_id, "removed": True}
+
+
+@app.get("/api/full/vast-tags")
+def list_vast(user: Dict[str, Any] = Depends(current_user)) -> List[Dict[str, Any]]:
+    with conn() as db:
+        return dicts(db.execute("SELECT * FROM vast_tags ORDER BY created_at DESC").fetchall())
+
+
+@app.post("/api/full/vast-tags/validate")
+def validate_vast_tag(payload: VastValidateRequest, user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    return _validate_vast(payload.vast_url, payload.vast_xml)
+
+
+@app.post("/api/full/vast-tags")
+def create_vast(payload: VastTagCreate, user: Dict[str, Any] = Depends(roles("admin", "trader"))) -> Dict[str, Any]:
+    check = _validate_vast(payload.vast_url, None)
+    if not check["valid"]:
+        raise HTTPException(400, f"Invalid VAST tag: {check['reasons']}")
+    vast_id = str(uuid4())
+    with conn() as db:
+        db.execute("INSERT INTO vast_tags VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (vast_id, payload.name, payload.vast_url, payload.channel, payload.duration, int(payload.skippable), "active", now_iso()))
+        db.commit()
+    audit(user["email"], "vast_create", "vast_tag", vast_id, payload.model_dump())
+    return {"id": vast_id, "status": "active", **payload.model_dump()}
+
+
+@app.get("/api/full/ivt/report")
+def ivt_report(user: Dict[str, Any] = Depends(current_user)) -> Dict[str, Any]:
+    """Invalid-traffic estimate by supply path (GIVT/SIVT), from supply fraud signals."""
+    with conn() as db:
+        supply = dicts(db.execute("SELECT * FROM supply_paths").fetchall())
+    rows = []
+    for s in supply:
+        fr = s["fraud_risk"] or 0
+        givt = round(min(8.0, fr * 1.5 + 0.3), 2)
+        sivt = round(min(4.0, fr * 0.8), 2)
+        rows.append({"partner": s["partner"], "channel": s["channel"], "givt_rate": givt, "sivt_rate": sivt, "valid_rate": round(100 - givt - sivt, 2), "status": s["status"]})
+    rows.sort(key=lambda r: r["givt_rate"] + r["sivt_rate"], reverse=True)
+    return {
+        "by_partner": rows,
+        "avg_valid_rate": round(sum(r["valid_rate"] for r in rows) / max(len(rows), 1), 2),
+        "note": "GIVT = general invalid traffic (bots, data centers, known crawlers); SIVT = sophisticated invalid traffic. Estimated from supply fraud signals — production wires DV / IAS / HUMAN.",
+    }
+
+
 def _targeting_defaults(line_item_id: str) -> Dict[str, Any]:
     return {"line_item_id": line_item_id, "devices": [], "geos": [], "dayparts": [], "brand_safety": "standard", "viewability_target": 0.7, "updated_at": None}
 
@@ -904,6 +1061,7 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
         targeting = _load_targeting(db, payload.line_item_id) if line else None
         # Load persisted per-user frequency so caps carry across simulation runs.
         ledger_rows = dicts(db.execute("SELECT user_key, impressions FROM frequency_ledger WHERE line_item_id=?", (payload.line_item_id,)).fetchall()) if line else []
+        blocked_partners = {dict(r)["value"] for r in db.execute("SELECT value FROM supply_blocklist WHERE kind=?", ("partner",)).fetchall()}
     if not line or not factors:
         raise HTTPException(404, "Line item or bid factors not found")
     if not supply_rows:
@@ -921,10 +1079,24 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
     tally = {"bid": 0, "throttle": 0, "no_bid": 0, "blocked": 0}
     wins, spend_cpm, clearing_sum, second_price_sum, score_sum = 0, 0.0, 0.0, 0.0, 0.0
     frequency_capped, pace_throttled, targeting_filtered = 0, 0, 0
+    ivt_filtered, givt_count, sivt_count, brand_safety_blocked = 0, 0, 0, 0
     by_partner: Dict[str, Dict[str, Any]] = {}
 
     for i in range(payload.requests):
         supply = rng.choice(supply_rows)
+        # Brand safety: drop blocklisted supply partners.
+        if supply["partner"] in blocked_partners:
+            brand_safety_blocked += 1
+            continue
+        # Invalid traffic (IVT): filter GIVT/SIVT estimated from supply fraud signals.
+        ivt_prob = min(0.2, (supply["fraud_risk"] or 0) / 100 * 6 + 0.005)
+        if rng.random() < ivt_prob:
+            ivt_filtered += 1
+            if rng.random() < 0.6:
+                givt_count += 1
+            else:
+                sivt_count += 1
+            continue
         uid = rng.randrange(user_pool)
         seen = freq_seen.get(uid, 0)
         contains_phi = rng.random() < payload.phi_leak_rate
@@ -993,6 +1165,10 @@ def simulate_bidstream(payload: BidstreamRequest, user: Dict[str, Any] = Depends
         "frequency_capped": frequency_capped,
         "pace_throttled": pace_throttled,
         "targeting_filtered": targeting_filtered,
+        "ivt_filtered": ivt_filtered,
+        "givt": givt_count,
+        "sivt": sivt_count,
+        "brand_safety_blocked": brand_safety_blocked,
         "unique_reach": unique_reach,
         "avg_frequency": round(total_imps / max(unique_reach, 1), 2),
         "by_partner": [

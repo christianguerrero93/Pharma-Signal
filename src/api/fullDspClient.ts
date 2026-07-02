@@ -168,6 +168,10 @@ export type Bidstream = {
   frequency_capped: number;
   pace_throttled: number;
   targeting_filtered: number;
+  ivt_filtered: number;
+  givt: number;
+  sivt: number;
+  brand_safety_blocked: number;
   unique_reach: number;
   avg_frequency: number;
   carried_over_users: number;
@@ -286,6 +290,13 @@ export type FrequencyGovernance = {
 };
 
 export type Overview = { kpis: Record<string, number>; narrative: string; storage_backend?: string };
+
+export type VastTag = { id: string; name: string; vast_url: string; channel: string; duration: number; skippable: number; status: string; created_at: string };
+export type VastValidate = { valid: boolean; reasons: string[]; version: string | null; media_files: string[] };
+export type BlocklistItem = { id: string; value: string; kind: string; reason: string; created_at: string };
+export type BrandSafety = { config: { blocked_categories: string[]; sensitivity: string }; categories: string[]; sensitivity_tiers: string[]; blocklist: BlocklistItem[] };
+export type IvtRow = { partner: string; channel: string; givt_rate: number; sivt_rate: number; valid_rate: number; status: string };
+export type IvtReport = { by_partner: IvtRow[]; avg_valid_rate: number; note: string };
 
 export type Alert = { severity: 'critical' | 'warning' | 'info'; category: string; message: string; metric: string; value: number };
 export type AlertsData = { alerts: Alert[]; counts: { critical: number; warning: number; info: number }; total: number; generated_at: string };

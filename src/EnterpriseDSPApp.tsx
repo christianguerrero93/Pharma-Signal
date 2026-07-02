@@ -6,10 +6,10 @@ import {
 } from 'lucide-react';
 import {
   API_BASE, DEFAULT_PASSWORD, createClient, friendlyError, loginRequest,
-  AlertsData, Audience, AudienceOverlap, BidFactors, Bidstream, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
-  Creative, Deal, Forecast, FrequencyGovernance, FrequencyState, Insights, MeasurementPlan, MeasurementResultDetail, Optimizer,
+  AlertsData, Audience, AudienceOverlap, BidFactors, Bidstream, BrandSafety, Campaign, Channel, Channels, Compliance, Connector, ConnectorFacts,
+  Creative, Deal, Forecast, FrequencyGovernance, FrequencyState, Insights, IvtReport, MeasurementPlan, MeasurementResultDetail, Optimizer,
   Overview, Planner, RankedSupply, Reporting, RtbBidResponse, RtbWin, StoredResult, SupplyOptimize, SupplyPath,
-  Targeting, User, Workbench,
+  Targeting, User, VastTag, VastValidate, Workbench,
 } from './api/fullDspClient';
 import { toast, ToastContainer } from './toast';
 
@@ -700,6 +700,20 @@ function CreativeTab({ client, workbench, role, setError }: { client: Client; wo
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (campaigns[0] && !form.campaign_id) setForm((f) => ({ ...f, campaign_id: campaigns[0].id })); }, [campaigns, form.campaign_id]);
 
+  const [vastTags, setVastTags] = useState<VastTag[]>([]);
+  const [vastForm, setVastForm] = useState({ name: 'CTV Hero 15s', vast_url: 'https://ads.example/vast.xml', channel: 'CTV', duration: 15, skippable: false });
+  const [vastCheck, setVastCheck] = useState<VastValidate | null>(null);
+  const loadVast = useCallback(() => client.get<VastTag[]>('/api/full/vast-tags').then(setVastTags).catch(() => {}), [client]);
+  useEffect(() => { loadVast(); }, [loadVast]);
+  async function validateVast() {
+    try { setVastCheck(await client.post<VastValidate>('/api/full/vast-tags/validate', { vast_url: vastForm.vast_url })); } catch (e) { setError(friendlyError(e, 'Validation failed')); }
+  }
+  async function createVast(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    try { await client.post('/api/full/vast-tags', vastForm); toast.success('VAST tag uploaded'); setVastCheck(null); loadVast(); } catch (err) { setError(friendlyError(err, 'Upload VAST failed')); toast.error('Upload VAST failed'); } finally { setBusy(false); }
+  }
+
   async function submitCreative(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -763,6 +777,26 @@ function CreativeTab({ client, workbench, role, setError }: { client: Client; wo
         </div>
         {!canReview && <small>Sign in as admin or analyst to action MLR decisions.</small>}
       </Panel>
+
+      <form className="dsp-panel" onSubmit={createVast}>
+        <div className="panel-title"><div><p className="eyebrow">VAST tags</p><h2>Upload video / CTV VAST tags</h2></div><Radio /></div>
+        <div className="form-grid two-col">
+          <label>Name<input value={vastForm.name} onChange={(e) => setVastForm({ ...vastForm, name: e.target.value })} /></label>
+          <label>Channel<select value={vastForm.channel} onChange={(e) => setVastForm({ ...vastForm, channel: e.target.value })}>{['CTV', 'Video', 'Audio'].map((c) => <option key={c}>{c}</option>)}</select></label>
+          <label>VAST tag URL<input value={vastForm.vast_url} onChange={(e) => setVastForm({ ...vastForm, vast_url: e.target.value })} placeholder="https://.../vast.xml" /></label>
+          <label>Duration (s)<input type="number" value={vastForm.duration} onChange={(e) => setVastForm({ ...vastForm, duration: Number(e.target.value) })} /></label>
+          <label className="check-row"><input type="checkbox" checked={vastForm.skippable} onChange={(e) => setVastForm({ ...vastForm, skippable: e.target.checked })} /> Skippable</label>
+        </div>
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={validateVast}>Validate</button>
+          <button className="primary-button" disabled={busy || !vastForm.vast_url}>Upload VAST tag</button>
+        </div>
+        {vastCheck && <div className={vastCheck.valid ? 'response-box' : 'error-box'}>{vastCheck.valid ? '✓ ' : '✗ '}{vastCheck.reasons.join('; ')}{vastCheck.media_files.length ? ` · media: ${vastCheck.media_files.join(', ')}` : ''}</div>}
+        <div className="table-list">
+          {vastTags.map((v) => <div key={v.id}><strong>{v.name}</strong><span>{v.channel} · {v.duration}s · {v.skippable ? 'skippable' : 'non-skippable'}</span><code>{v.vast_url}</code></div>)}
+          {!vastTags.length && <p>No VAST tags yet — upload one above.</p>}
+        </div>
+      </form>
     </>
   );
 }
@@ -775,10 +809,12 @@ function SupplyTab({ client, setError }: TabProps) {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [busy, setBusy] = useState(false);
   const [newDeal, setNewDeal] = useState({ partner: 'PubMatic', deal_id: 'PM-PMP-NEW-01', deal_type: 'PMP', channel: 'Display', floor_cpm: 8, audience_match: 0.8, status: 'active' });
+  const [ivt, setIvt] = useState<IvtReport | null>(null);
 
   const load = useCallback(() => {
     client.get<SupplyOptimize>('/api/full/supply-paths/optimize').then((s) => setRanked(s.supply_paths)).catch((e) => setError(friendlyError(e, 'Load supply failed')));
     client.get<Deal[]>('/api/full/deals').then(setDeals).catch(() => {});
+    client.get<IvtReport>('/api/full/ivt/report').then(setIvt).catch(() => {});
   }, [client, setError]);
   useEffect(() => { load(); }, [load]);
 
@@ -806,6 +842,20 @@ function SupplyTab({ client, setError }: TabProps) {
               <span>{pct(s.working_media_ratio)}</span>
               <span><Badge tone={recTone(s.recommendation)}>{s.recommendation.replaceAll('_', ' ')}</Badge></span>
             </div>
+          ))}
+        </div>
+      </Panel>
+
+      <Panel eyebrow="Invalid traffic (IVT)" title="Bot & fraud filtering by supply path" icon={<ShieldCheck />}>
+        <p>{ivt?.note}</p>
+        <div className="metric-grid">
+          <div className="metric-card"><span>Avg valid rate</span><strong className="ok">{ivt ? `${ivt.avg_valid_rate}%` : '—'}</strong></div>
+          <div className="metric-card"><span>Paths monitored</span><strong>{ivt?.by_partner.length ?? 0}</strong></div>
+        </div>
+        <div className="data-table">
+          <div className="data-head ivt-cols"><span>Partner</span><span>Channel</span><span>GIVT</span><span>SIVT</span><span>Valid</span></div>
+          {ivt?.by_partner.map((r) => (
+            <div className="data-row ivt-cols" key={r.partner}><strong>{r.partner}</strong><span>{r.channel}</span><span className={r.givt_rate > 1.5 ? 'neg' : ''}>{r.givt_rate}%</span><span className={r.sivt_rate > 1 ? 'neg' : ''}>{r.sivt_rate}%</span><span className="pos">{r.valid_rate}%</span></div>
           ))}
         </div>
       </Panel>
@@ -943,6 +993,8 @@ function BidderTab({ client, workbench, reload, setError }: { client: Client; wo
               <div className="metric-card"><span>Frequency capped</span><strong>{num(sim.frequency_capped)}</strong></div>
               <div className="metric-card"><span>Pace throttled</span><strong>{num(sim.pace_throttled)}</strong></div>
               <div className="metric-card"><span>Targeting filtered</span><strong>{num(sim.targeting_filtered)}</strong></div>
+              <div className="metric-card"><span>IVT filtered<Hint text="Invalid traffic — bots/data-center (GIVT) and sophisticated (SIVT), dropped before bidding." /></span><strong>{num(sim.ivt_filtered)} <small className="muted-label">G{num(sim.givt)}/S{num(sim.sivt)}</small></strong></div>
+              <div className="metric-card"><span>Brand-safety blocked</span><strong>{num(sim.brand_safety_blocked)}</strong></div>
               <div className="metric-card"><span>Carried-over users<Hint text="Per-user frequency persists across runs — re-run to see caps bite harder." /></span><strong>{num(sim.carried_over_users)}</strong></div>
               <div className="metric-card"><span>PHI blocked</span><strong className="warn">{num(sim.phi_blocked)}</strong></div>
             </div>
@@ -1324,11 +1376,35 @@ function ConnectorsTab({ client, setError }: TabProps) {
 function ComplianceTab({ client, setError }: TabProps) {
   const [scan, setScan] = useState<Compliance | null>(null);
   const [freq, setFreq] = useState<FrequencyGovernance | null>(null);
+  const [bs, setBs] = useState<BrandSafety | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [block, setBlock] = useState({ value: '', kind: 'partner', reason: '' });
   const load = useCallback(() => {
     client.get<Compliance>('/api/full/compliance/scan').then(setScan).catch((e) => setError(friendlyError(e, 'Compliance scan failed')));
     client.get<FrequencyGovernance>('/api/full/frequency/governance').then(setFreq).catch(() => {});
+    client.get<BrandSafety>('/api/full/brand-safety').then(setBs).catch(() => {});
   }, [client, setError]);
   useEffect(() => { load(); }, [load]);
+
+  function toggleCategory(cat: string) {
+    if (!bs) return;
+    const has = bs.config.blocked_categories.includes(cat);
+    setBs({ ...bs, config: { ...bs.config, blocked_categories: has ? bs.config.blocked_categories.filter((c) => c !== cat) : [...bs.config.blocked_categories, cat] } });
+  }
+  async function saveBrandSafety() {
+    if (!bs) return;
+    setBusy(true);
+    try { await client.put('/api/full/brand-safety', { blocked_categories: bs.config.blocked_categories, sensitivity: bs.config.sensitivity }); toast.success('Brand safety saved'); } catch (e) { setError(friendlyError(e, 'Save failed')); toast.error('Save failed'); } finally { setBusy(false); }
+  }
+  async function addBlock(e: FormEvent) {
+    e.preventDefault();
+    if (!block.value) return;
+    setBusy(true);
+    try { await client.post('/api/full/supply-blocklist', block); toast.success(`Blocked ${block.value}`); setBlock({ value: '', kind: 'partner', reason: '' }); load(); } catch (err) { setError(friendlyError(err, 'Block failed')); toast.error('Block failed'); } finally { setBusy(false); }
+  }
+  async function removeBlock(id: string) {
+    try { await client.request(`/api/full/supply-blocklist/${id}`, { method: 'DELETE' }); toast.success('Removed'); load(); } catch (e) { setError(friendlyError(e, 'Remove failed')); }
+  }
 
   const sevTone = (s: string) => (s === 'critical' ? 'danger' : s === 'high' ? 'danger' : s === 'medium' ? 'warn' : 'muted');
 
@@ -1361,6 +1437,35 @@ function ComplianceTab({ client, setError }: TabProps) {
             {freq?.by_channel.map((c) => <div key={c.channel}><strong>{c.channel}</strong><span>caps {c.min_cap}–{c.max_cap} (avg {c.avg_cap}) · {c.lines} lines</span></div>)}
           </div>
         </Panel>
+      </div>
+
+      <div className="dsp-grid two">
+        <Panel eyebrow="Brand safety" title="Blocked content categories" icon={<ShieldCheck />}
+          actions={<button type="button" className="primary-button" disabled={busy || !bs} onClick={saveBrandSafety}>Save</button>}>
+          <p>Impressions on blocked content categories are excluded. Sensitivity raises the bar for pharma-regulated adjacency.</p>
+          <div className="chip-row">
+            {bs?.categories.map((cat) => (
+              <button type="button" key={cat} className={`chip ${bs.config.blocked_categories.includes(cat) ? 'on' : ''}`} onClick={() => toggleCategory(cat)}>{cat.replaceAll('_', ' ')}</button>
+            ))}
+          </div>
+          <label>Sensitivity<select value={bs?.config.sensitivity || 'standard'} onChange={(e) => bs && setBs({ ...bs, config: { ...bs.config, sensitivity: e.target.value } })}>{(bs?.sensitivity_tiers || []).map((t) => <option key={t} value={t}>{t.replaceAll('_', ' ')}</option>)}</select></label>
+        </Panel>
+
+        <form className="dsp-panel" onSubmit={addBlock}>
+          <div className="panel-title"><div><p className="eyebrow">Supply blocklist</p><h2>Block partners / domains</h2></div><ShieldCheck /></div>
+          <div className="form-grid two-col">
+            <label>Value<input value={block.value} onChange={(e) => setBlock({ ...block, value: e.target.value })} placeholder="OpenX or badsite.example" /></label>
+            <label>Kind<select value={block.kind} onChange={(e) => setBlock({ ...block, kind: e.target.value })}>{['partner', 'domain', 'category'].map((k) => <option key={k}>{k}</option>)}</select></label>
+          </div>
+          <label>Reason<input value={block.reason} onChange={(e) => setBlock({ ...block, reason: e.target.value })} /></label>
+          <button className="primary-button" disabled={busy || !block.value}>Add to blocklist</button>
+          <div className="table-list">
+            {bs?.blocklist.map((b) => (
+              <div key={b.id} className="kv-row"><span><Badge tone="danger">{b.kind}</Badge> <strong>{b.value}</strong>{b.reason ? ` · ${b.reason}` : ''}</span><button type="button" className="mini danger" onClick={() => removeBlock(b.id)}>Remove</button></div>
+            ))}
+            {!bs?.blocklist.length && <p>No blocked supply.</p>}
+          </div>
+        </form>
       </div>
 
       <Panel eyebrow="Findings" title="Open compliance findings" icon={<ShieldCheck />}>
