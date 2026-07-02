@@ -173,6 +173,7 @@ export default function EnterpriseDSPApp() {
     try {
       const data = await loginRequest(email, password);
       localStorage.setItem('pharma_signal_full_token', data.access_token);
+      if (data.refresh_token) localStorage.setItem('pharma_signal_refresh_token', data.refresh_token);
       setToken(data.access_token);
       setUser(data.user);
     } catch (err) {
@@ -184,6 +185,7 @@ export default function EnterpriseDSPApp() {
 
   function logout() {
     localStorage.removeItem('pharma_signal_full_token');
+    localStorage.removeItem('pharma_signal_refresh_token');
     setToken('');
     setUser(null);
     setWorkbench(null);

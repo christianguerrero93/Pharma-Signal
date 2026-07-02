@@ -319,12 +319,44 @@ export function friendlyError(err: unknown, fallback: string): string {
   return message || fallback;
 }
 
-export function createClient(getToken: () => string) {
-  async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}`, ...(init.headers || {}) },
+export const TOKEN_KEY = 'pharma_signal_full_token';
+export const REFRESH_KEY = 'pharma_signal_refresh_token';
+
+// Exchange the stored refresh token for a fresh access token. Returns the new
+// access token, or null if refresh is impossible (no/expired refresh token).
+async function tryRefresh(): Promise<string | null> {
+  const refreshToken = localStorage.getItem(REFRESH_KEY);
+  if (!refreshToken) return null;
+  try {
+    const resp = await fetch(`${API_BASE}/api/full/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
     });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    localStorage.setItem(TOKEN_KEY, data.access_token);
+    if (data.refresh_token) localStorage.setItem(REFRESH_KEY, data.refresh_token);
+    return data.access_token as string;
+  } catch {
+    return null;
+  }
+}
+
+export function createClient(getToken: () => string) {
+  async function rawRequest<T>(path: string, init: RequestInit, token: string): Promise<Response> {
+    return fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(init.headers || {}) },
+    });
+  }
+  async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    let response = await rawRequest<T>(path, init, getToken());
+    if (response.status === 401) {
+      // Access token likely expired — silently refresh and retry once.
+      const newToken = await tryRefresh();
+      if (newToken) response = await rawRequest<T>(path, init, newToken);
+    }
     if (!response.ok) throw new Error(await response.text());
     return response.json() as Promise<T>;
   }
@@ -336,7 +368,7 @@ export function createClient(getToken: () => string) {
   };
 }
 
-export async function loginRequest(email: string, password: string): Promise<{ access_token: string; user: User }> {
+export async function loginRequest(email: string, password: string): Promise<{ access_token: string; refresh_token?: string; user: User }> {
   const response = await fetch(`${API_BASE}/api/full/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
