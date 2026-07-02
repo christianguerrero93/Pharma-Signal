@@ -298,6 +298,11 @@ export type BrandSafety = { config: { blocked_categories: string[]; sensitivity:
 export type IvtRow = { partner: string; channel: string; givt_rate: number; sivt_rate: number; valid_rate: number; status: string };
 export type IvtReport = { by_partner: IvtRow[]; avg_valid_rate: number; note: string };
 
+export type Advertiser = { id: string | null; name: string; kind: string; status: string; created_at?: string; campaigns: number; total_budget: number };
+export type PacingAdjustment = { line_item_id: string; name: string; campaign: string; pacing: number; action: 'raise_bid' | 'lower_bid' | 'hold'; old_bid_cpm: number; new_bid_cpm: number; reason: string; applied: boolean };
+export type PacingAuto = { apply: boolean; adjustments: PacingAdjustment[]; adjusted: number; generated_at: string };
+export type ReportView = { id: string; name: string; config: { days?: number }; created_at?: string };
+
 export type Alert = { severity: 'critical' | 'warning' | 'info'; category: string; message: string; metric: string; value: number };
 export type AlertsData = { alerts: Alert[]; counts: { critical: number; warning: number; info: number }; total: number; generated_at: string };
 

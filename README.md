@@ -96,6 +96,13 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   and an NPI-authenticated point-of-care HCP audience.
 - **VAST tags** — upload and validate video/CTV/audio VAST tags (structural XML +
   URL validation, MediaFile extraction) into a tag library.
+- **Advertiser accounts** — brand/agency entities above campaigns with campaign and
+  budget rollups; campaigns attach to an advertiser at build time.
+- **Pacing automation** — compares delivery to budget per active line item and
+  raises/lowers bids (bounded ±30%) with preview-then-apply and full audit.
+- **Saved report views** — per-user named report configurations in the Reporting tab.
+- **Hardened auth** — refresh tokens with silent renewal, login rate limiting,
+  structured request logging, and a 27-test pytest suite run in CI.
 - **Brand safety** — configurable blocked content categories + sensitivity tier and a
   supply blocklist (partner/domain/category); blocklisted supply is dropped from auctions.
 - **Invalid traffic (IVT)** — the bidder filters GIVT (bots/data-center) and SIVT
