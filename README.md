@@ -94,6 +94,13 @@ The `full_dsp_server.py` API and the Command OS frontend implement:
   (admin / trader / analyst), and remove members, with self-protection guards.
 - **EHR / point-of-care inventory** — endemic EHR supply paths (OptimizeRx-style)
   and an NPI-authenticated point-of-care HCP audience.
+- **VAST tags** — upload and validate video/CTV/audio VAST tags (structural XML +
+  URL validation, MediaFile extraction) into a tag library.
+- **Brand safety** — configurable blocked content categories + sensitivity tier and a
+  supply blocklist (partner/domain/category); blocklisted supply is dropped from auctions.
+- **Invalid traffic (IVT)** — the bidder filters GIVT (bots/data-center) and SIVT
+  (sophisticated) invalid traffic estimated from supply fraud signals, with an IVT
+  report (valid-rate by supply path) — the slot where DV / IAS / HUMAN would wire in.
 
 ### Product experience
 

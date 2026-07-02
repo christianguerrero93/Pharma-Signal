@@ -133,6 +133,19 @@ jobs:
           ehr = [s for s in client.get('/api/full/supply-paths/optimize', headers=headers).json()['supply_paths'] if s['channel'] == 'EHR']
           assert len(ehr) >= 2, 'expected EHR point-of-care inventory'
 
+          vv = client.post('/api/full/vast-tags/validate', headers=headers, json={'vast_url': 'https://ads.example/vast.xml'})
+          assert vv.status_code == 200 and vv.json()['valid'] is True, vv.text
+          vt = client.post('/api/full/vast-tags', headers=headers, json={'name': 'CTV 15s', 'vast_url': 'https://ads.example/vast.xml', 'channel': 'CTV', 'duration': 15, 'skippable': False})
+          assert vt.status_code == 200, vt.text
+          bs = client.put('/api/full/brand-safety', headers=headers, json={'blocked_categories': ['adult', 'gambling'], 'sensitivity': 'strict'})
+          assert bs.status_code == 200 and bs.json()['config']['sensitivity'] == 'strict', bs.text
+          bl = client.post('/api/full/supply-blocklist', headers=headers, json={'value': 'OpenX', 'kind': 'partner', 'reason': 'quality'})
+          assert bl.status_code == 200, bl.text
+          sim2 = client.post('/api/full/bidstream/simulate', headers=headers, json={'line_item_id': line_id, 'requests': 800, 'seed': 4})
+          assert sim2.status_code == 200 and 'ivt_filtered' in sim2.json() and sim2.json()['brand_safety_blocked'] > 0, sim2.text
+          ivt = client.get('/api/full/ivt/report', headers=headers)
+          assert ivt.status_code == 200 and 0 < ivt.json()['avg_valid_rate'] <= 100, ivt.text
+
           for path in ['/api/full/overview', '/api/full/optimizer/portfolio', '/api/full/supply-paths/optimize', '/api/full/compliance/scan', '/api/full/frequency/governance', '/api/full/measurement/results', '/api/full/connectors/facts', '/api/full/rtb/wins', '/api/full/insights', '/api/full/channels', '/api/full/alerts']:
               r = client.get(path, headers=headers)
               assert r.status_code == 200, f'{path}: {r.text}'
